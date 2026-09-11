@@ -89,12 +89,18 @@ async def ingest(file: UploadFile = File(...)):
 
     dataset_id = hashlib.sha256(raw).hexdigest()
 
-    text = raw.decode("utf-8", errors="replace")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="file is not valid UTF-8 text/CSV")
+
     import csv
     reader = csv.DictReader(io.StringIO(text))
     rows = list(reader)
     if reader.fieldnames is None:
         raise HTTPException(status_code=400, detail="not a valid CSV (no header row)")
+    if any(f is None or not f.strip() for f in reader.fieldnames):
+        raise HTTPException(status_code=400, detail="not a valid CSV (malformed header row)")
     if not rows:
         raise HTTPException(status_code=400, detail="CSV has a header but zero data rows")
 
