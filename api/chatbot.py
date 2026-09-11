@@ -9,7 +9,11 @@ import chatbot_deterministic
 log = logging.getLogger("chatbot")
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+# llama-3.3-70b-versatile is gone from Groq's catalog as of this event; openai/gpt-oss-120b
+# confirmed available and working (see IMPLEMENTATION_PLAN.md). It's a reasoning model that
+# burns tokens on hidden reasoning before the visible answer — reasoning_effort="low" below
+# keeps that overhead small; without it, low max_tokens calls came back with empty content.
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
 _client: Groq | None = None
 
@@ -94,7 +98,8 @@ def generate_cypher(question: str, columns: list[str], sample_row: dict) -> str:
             {"role": "user", "content": question},
         ],
         temperature=0,
-        max_tokens=300,
+        max_tokens=600,
+        reasoning_effort="low",
         timeout=8,
     )
     raw = resp.choices[0].message.content.strip()
@@ -130,7 +135,8 @@ def phrase_answer(question: str, cypher: str, result: list[dict]) -> str:
         model=GROQ_MODEL,
         messages=[{"role": "user", "content": prompt}],
         temperature=0,
-        max_tokens=200,
+        max_tokens=400,
+        reasoning_effort="low",
         timeout=8,
     )
     return resp.choices[0].message.content.strip()
