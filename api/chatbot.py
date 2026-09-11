@@ -42,6 +42,8 @@ Rules:
 DELETE, SET, REMOVE, DROP, or any write.
 - Only reference the labels, relationship type, and properties listed above. Never invent a property \
 that isn't in the columns list.
+- If the query returns individual rows/nodes (not just a count/sum/avg/min/max aggregate), always end \
+it with a LIMIT clause of 200 or fewer — this graph can hold thousands of rows.
 - If the question cannot be answered from this schema at all (asks about something with no relation to \
 this data, or requires information not present), output exactly: {no_query}
 - A question whose honest answer is zero or empty (e.g. counting rows that don't exist) is still \
@@ -54,7 +56,8 @@ Cypher query that was run against a Neo4j graph, and the raw JSON result of that
 Write a short, direct 1-2 sentence answer using ONLY the data in the result. Do not add any outside \
 information or general knowledge. If the result is empty or a count/aggregate is zero, say so plainly \
 (e.g. "There are no rows where ..." or "The count is 0."). Do not apologize, do not hedge beyond what \
-the data shows.
+the data shows. Use plain prose with normal spaces — no markdown, no bullet points, no unusual \
+punctuation or spacing.
 
 Question: {question}
 Cypher: {cypher}
@@ -119,10 +122,22 @@ def validate_read_only(cypher: str) -> bool:
     return True
 
 
+# Hard cap regardless of what the LLM's query does — a forgotten LIMIT on a "list all rows"
+# style question against a large dataset (see test_data/large.csv, 5000 rows) would otherwise
+# pull the whole graph into memory and into the HTTP response.
+MAX_RESULT_ROWS = 200
+
+
 def execute_cypher(driver, database: str, cypher: str) -> list[dict]:
     def _run(tx):
         result = tx.run(cypher)
-        return [record.data() for record in result]
+        rows = []
+        for i, record in enumerate(result):
+            if i >= MAX_RESULT_ROWS:
+                result.consume()
+                break
+            rows.append(record.data())
+        return rows
 
     with driver.session(database=database) as session:
         # access_mode READ is enforced by execute_read at the server too — defense in depth #2.

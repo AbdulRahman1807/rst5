@@ -179,7 +179,7 @@ def _topn_intent(driver, database, question, columns):
     m = _TOPN_WORDS.search(question)
     if not m:
         return None
-    n = int(next(g for g in m.groups() if g))
+    n = min(int(next(g for g in m.groups() if g)), 200)  # cap — "top 999999 by amount" shouldn't dump the graph
     matched = _matched_columns(question, columns)
     if not matched:
         return None

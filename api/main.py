@@ -5,10 +5,9 @@ import logging
 import os
 import time
 
+from confluent_kafka import Producer
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from kafka import KafkaProducer
-from kafka.errors import NoBrokersAvailable
 from neo4j import GraphDatabase
 from neo4j.exceptions import ServiceUnavailable, AuthError
 
@@ -36,18 +35,14 @@ app.add_middleware(
 # Lost on restart; acceptable per IMPLEMENTATION_PLAN.md (Neo4j is authoritative once loading starts).
 jobs: dict[str, dict] = {}
 
-_producer: KafkaProducer | None = None
+_producer: Producer | None = None
 _driver = None
 
 
-def get_producer() -> KafkaProducer:
+def get_producer() -> Producer:
     global _producer
     if _producer is None:
-        _producer = KafkaProducer(
-            bootstrap_servers=KAFKA_BROKERS,
-            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-            key_serializer=lambda k: k.encode("utf-8"),
-        )
+        _producer = Producer({"bootstrap.servers": KAFKA_BROKERS})
     return _producer
 
 
@@ -64,7 +59,7 @@ def health():
     neo4j_connected = False
 
     try:
-        get_producer().bootstrap_connected()
+        get_producer().list_topics(timeout=3)
         kafka_connected = True
     except Exception as e:
         log.warning("kafka health check failed: %s", e)
@@ -110,6 +105,11 @@ async def ingest(file: UploadFile = File(...)):
     jobs[dataset_id] = {"rows_received": rows_total, "received_at": uploaded_at}
 
     producer = get_producer()
+
+    def _on_delivery(err, msg):
+        if err is not None:
+            log.error("kafka delivery failed for dataset=%s: %s", dataset_id, err)
+
     for i, row in enumerate(rows):
         message = {
             "dataset_id": dataset_id,
@@ -119,8 +119,14 @@ async def ingest(file: UploadFile = File(...)):
             "rows_total": rows_total,
             "row": row,
         }
-        producer.send(KAFKA_TOPIC, key=dataset_id, value=message)
-    producer.flush()
+        producer.produce(
+            KAFKA_TOPIC,
+            key=dataset_id.encode("utf-8"),
+            value=json.dumps(message).encode("utf-8"),
+            callback=_on_delivery,
+        )
+        producer.poll(0)  # serve delivery callbacks without blocking; keeps the internal queue draining
+    producer.flush(timeout=30)
 
     return {"job_id": dataset_id, "rows_received": rows_total, "status": "queued"}
 

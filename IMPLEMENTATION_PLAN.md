@@ -8,7 +8,8 @@ Following the handout's suggested stack (fastest path to finishing inside the ti
 - **API:** FastAPI (async support helps with Kafka, validates request bodies for free)
 - **UI:** [To decide — Nitika] Plain HTML + fetch (fastest, zero build step) or React if she's faster in it. Either is fine per the handout; a working ugly UI beats a broken pretty one, so don't let a React build/tooling setup eat into the 0:35–1:00 window in the timeline below — if React setup stalls, fall back to plain HTML + fetch immediately rather than debugging it further.
 - **Broker:** Apache Kafka, single broker, KRaft mode (`apache/kafka:3.7.0`, pinned) — no ZooKeeper needed
-- **Graph DB:** Neo4j 5.x Community (`neo4j:5.24-community`, pinned), instance `CSV_Graph_DB`
+- **Kafka client:** `confluent-kafka` (librdkafka-based) — not `kafka-python`, whose compatibility with modern KRaft-mode brokers is a known risk; see REPORT.md methods table
+- **Graph DB:** Neo4j 5.x Community (`neo4j:5.24-community`, pinned), instance `csv-graph-db` (event's fixed name `CSV_Graph_DB` contains underscores, which Neo4j 5.x database names cannot — deviation documented in REPORT.md)
 - **Driver:** Official Neo4j Python driver — never hand-roll Bolt/HTTP calls
 - **Chatbot:** GroqCloud API (LLM confirmed allowed) — `groq` Python SDK or plain HTTPS calls to its OpenAI-compatible endpoint. Used for text→Cypher generation and/or answer phrasing; never for answering from general knowledge.
 - **Base images:** `python:3.11-slim` for api/loader; all pinned, `pip install --no-cache-dir` to keep images small
@@ -45,23 +46,31 @@ All five wired together in one `docker-compose.yml`.
 ### Where job status and row counts are persisted
 Two stores, cleanly separated so `api` never writes CSV content to Neo4j directly (requirement #2):
 - **`api` in-memory dict** `jobs[job_id] = {rows_received, received_at}` — written synchronously during `/ingest`, before anything is published to Kafka. This is bookkeeping about *the upload itself*, not CSV content, so it doesn't violate requirement #2. Known limitation (document in `REPORT.md`): this is lost on an `api` restart — acceptable for a 3-hour demo since it only covers the brief "queued, nothing consumed yet" window.
-- **Neo4j `:Dataset` node** — the durable, authoritative store for everything past "queued." The **loader** (never `api`) creates/updates it as it consumes `csv-rows`:
+- **Neo4j `:Dataset` node** — the durable, authoritative store for everything past "queued." The **loader** (never `api`) creates/updates it as it consumes `csv-rows`. `rows_loaded`/`rows_failed` must only increment on a row's genuine first appearance — a bare unconditional `SET rows_loaded = rows_loaded + 1` after `MERGE` double-counts on Kafka replay (which the handout explicitly supports) or any loader restart before the next auto-commit checkpoint, even though the `:Row` node itself stays correctly idempotent. Cypher has no native conditional `SET`, so this uses the standard `FOREACH`-over-0-or-1-list idiom, gated by a temporary marker property that's removed before the transaction ends:
   ```cypher
   MERGE (d:Dataset {id: $dataset_id})
     ON CREATE SET d.filename = $filename, d.uploaded_at = $uploaded_at,
                   d.rows_total = $rows_total, d.rows_loaded = 0,
                   d.rows_failed = 0, d.status = 'loading'
   MERGE (r:Row {dataset_id: $dataset_id, row_index: $row_index})
-    ON CREATE SET r += $row
+    ON CREATE SET r += $row, r._new = true
+    ON MATCH SET r._new = false
   MERGE (d)-[:HAS_ROW]->(r)
-  SET d.rows_loaded = d.rows_loaded + 1,
-      d.status = CASE WHEN d.rows_loaded + d.rows_failed >= d.rows_total THEN 'complete' ELSE 'loading' END
+  WITH d, r
+  FOREACH (_ IN CASE WHEN r._new THEN [1] ELSE [] END | SET d.rows_loaded = d.rows_loaded + 1)
+  REMOVE r._new
+  SET d.status = CASE WHEN d.rows_loaded + d.rows_failed >= d.rows_total THEN 'complete' ELSE 'loading' END
   ```
-  On a write failure for a row, instead run:
+  On a write failure for a row, the same idempotency concern applies (a re-processed failure must only count once), gated by a `:FailedRow` marker node keyed the same way as `:Row`:
   ```cypher
   MATCH (d:Dataset {id: $dataset_id})
-  SET d.rows_failed = coalesce(d.rows_failed, 0) + 1,
-      d.status = CASE WHEN d.rows_loaded + d.rows_failed >= d.rows_total THEN 'complete' ELSE 'loading' END
+  MERGE (f:FailedRow {dataset_id: $dataset_id, row_index: $row_index})
+    ON CREATE SET f._new = true
+    ON MATCH SET f._new = false
+  WITH d, f
+  FOREACH (_ IN CASE WHEN f._new THEN [1] ELSE [] END | SET d.rows_failed = coalesce(d.rows_failed, 0) + 1)
+  REMOVE f._new
+  SET d.status = CASE WHEN d.rows_loaded + d.rows_failed >= d.rows_total THEN 'complete' ELSE 'loading' END
   ```
 - **`GET /status?job_id=X`** logic: unknown `job_id` (not in `api`'s in-memory dict) → 404. Known but no `:Dataset` node in Neo4j yet → `status: "queued"`, `rows_total` from the in-memory dict, `rows_loaded`/`rows_failed`: 0. `:Dataset` node exists → return its fields directly (Neo4j is authoritative once loading has started).
 
