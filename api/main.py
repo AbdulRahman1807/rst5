@@ -74,7 +74,7 @@ def health():
     return {"status": status, "kafka_connected": kafka_connected, "neo4j_connected": neo4j_connected}
 
 
-@app.post("/ingest")
+@app.post("/ingest", status_code=202)
 async def ingest(file: UploadFile = File(...)):
     raw = await file.read()
     if not raw:

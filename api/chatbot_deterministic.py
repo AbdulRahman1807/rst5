@@ -36,6 +36,12 @@ _SCHEMA_WORDS = re.compile(r"\b(what columns|which columns|what fields|what data
 _ROW_LOOKUP = re.compile(r"\brow\s*(?:index|number|#)?\s*(\d+)\b", re.IGNORECASE)
 _GROUPBY_WORDS = re.compile(r"\b(per|by|for each|each|breakdown (?:of|by))\b", re.IGNORECASE)
 _TOPN_WORDS = re.compile(r"\btop\s*(\d+)\b|\bhighest\s*(\d+)\b|\blowest\s*(\d+)\b", re.IGNORECASE)
+# Words implying the question intends a filter even when no column name/value could be
+# resolved (e.g. "how many rows belong to Nonexistent") — distinguishes "no filter intended"
+# from "filter intended but unresolvable", so we don't silently answer the wrong question.
+_FILTER_INTENT_WORDS = re.compile(
+    r"\b(belong|belongs|where|for|with|having|whose|that (?:are|is)|equal)\b", re.IGNORECASE
+)
 
 _AGG_FUNCS = [
     (re.compile(r"\b(sum|total)\s+of\b|\btotal\b(?!\s+number)", re.IGNORECASE), "sum"),
@@ -213,6 +219,11 @@ def _aggregate_intent(driver, database, question, columns):
         other_cols = [c for c in columns if c != target_col]
         filter_col, value = _find_any_filter(question, other_cols, driver, database)
 
+    if value is None and _FILTER_INTENT_WORDS.search(question):
+        # Filter-intent words present ("for X", "where X") but nothing resolved — don't
+        # silently aggregate over the whole dataset as if no filter was asked for.
+        return None
+
     where_clause, params = "", {}
     if filter_col and value is not None:
         where_clause = f"WHERE r.{_quote_ident(filter_col)} = $value "
@@ -259,13 +270,16 @@ def _count_intent(driver, database, question, columns):
         count = result[0]["count"] if result else 0
         return {"answer": f"There are {count} rows where {filter_col} = '{value}'.", "cypher": cypher, "result": result, "grounded": True}
 
-    if not matched:
+    if not matched and not _FILTER_INTENT_WORDS.search(question):
         cypher = "MATCH (r:Row) RETURN count(r) AS count"
         result = _run(driver, database, cypher, {})
         count = result[0]["count"] if result else 0
         return {"answer": f"There are {count} rows in total.", "cypher": cypher, "result": result, "grounded": True}
 
-    return None  # column mentioned but no usable filter extracted — let list/other intents try
+    # Either a column was named but no filter resolved, or filter-intent words (e.g. "belong
+    # to") suggest a filter was meant but couldn't be resolved — don't silently answer the
+    # unfiltered question instead; let the LLM tier or an honest "I don't know" handle it.
+    return None
 
 
 def _list_intent(driver, database, question, columns):
