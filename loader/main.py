@@ -5,16 +5,16 @@ import time
 
 from confluent_kafka import Consumer, KafkaException
 from neo4j import GraphDatabase
-from neo4j.exceptions import ServiceUnavailable
+from neo4j.exceptions import ServiceUnavailable, AuthError
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("loader")
 
-KAFKA_BROKERS = os.environ["KAFKA_BROKERS"]
-NEO4J_URI = os.environ["NEO4J_URI"]
-NEO4J_USER = os.environ["NEO4J_USER"]
+KAFKA_BROKERS = os.getenv("KAFKA_BROKERS", "kafka:9092")
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
+NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.environ["NEO4J_PASSWORD"]
-NEO4J_DATABASE = os.environ["NEO4J_DATABASE"]
+NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "csv-graph-db")
 KAFKA_TOPIC = "csv-rows"
 
 # Idempotent per IMPLEMENTATION_PLAN.md: MERGE keyed on dataset_id (sha256 of file) + row_index, never CREATE.
@@ -65,6 +65,9 @@ def connect_kafka() -> Consumer:
         except KafkaException:
             log.info("kafka not ready yet, retrying...")
             time.sleep(2)
+        except Exception as e:
+            log.warning("kafka error: %s, retrying...", e)
+            time.sleep(2)
     consumer.subscribe([KAFKA_TOPIC])
     return consumer
 
@@ -75,8 +78,8 @@ def connect_neo4j():
             driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
             driver.verify_connectivity()
             return driver
-        except ServiceUnavailable:
-            log.info("neo4j not ready yet, retrying...")
+        except (ServiceUnavailable, AuthError, Exception) as e:
+            log.info("neo4j not ready yet (%s), retrying...", e)
             time.sleep(2)
 
 
@@ -113,6 +116,7 @@ def main():
             try:
                 with driver.session(database=NEO4J_DATABASE) as session:
                     session.run(MARK_FAILED, dataset_id=dataset_id, row_index=row_index)
+                log.info("marked failed row for dataset=%s row_index=%s", dataset_id, row_index)
             except Exception as e2:
                 log.error("failed to mark row as failed: %s", e2)
 

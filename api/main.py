@@ -1,3 +1,4 @@
+import csv
 import hashlib
 import io
 import json
@@ -16,17 +17,19 @@ import chatbot
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("api")
 
-KAFKA_BROKERS = os.environ["KAFKA_BROKERS"]
-NEO4J_URI = os.environ["NEO4J_URI"]
-NEO4J_USER = os.environ["NEO4J_USER"]
+KAFKA_BROKERS = os.getenv("KAFKA_BROKERS", "kafka:9092")
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
+NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.environ["NEO4J_PASSWORD"]
-NEO4J_DATABASE = os.environ["NEO4J_DATABASE"]
+NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "csv-graph-db")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 KAFKA_TOPIC = "csv-rows"
 
 app = FastAPI(title="csv-graph-chat api")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000", "*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -92,7 +95,6 @@ async def ingest(file: UploadFile = File(...)):
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="file is not valid UTF-8 text/CSV")
 
-    import csv
     reader = csv.DictReader(io.StringIO(text))
     rows = list(reader)
     if reader.fieldnames is None:
@@ -170,6 +172,8 @@ def status(job_id: str):
 
 
 @app.post("/chat")
-def chat(payload: dict):
+def chat(payload: dict = None):
+    if payload is None:
+        payload = {}
     question = payload.get("question", "")
     return chatbot.answer_question(get_driver(), NEO4J_DATABASE, question)
