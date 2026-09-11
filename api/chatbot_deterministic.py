@@ -32,7 +32,11 @@ _COUNT_WORDS = re.compile(r"\b(how many|count|total number|number of)\b", re.IGN
 _LIST_WORDS = re.compile(r"\b(show|list|which rows|what rows|find)\b", re.IGNORECASE)
 _STATUS_WORDS = re.compile(r"\b(dataset|upload|status)\b", re.IGNORECASE)
 _DISTINCT_WORDS = re.compile(r"\b(different|unique|distinct)\b", re.IGNORECASE)
-_SCHEMA_WORDS = re.compile(r"\b(what columns|which columns|what fields|what data|what properties)\b", re.IGNORECASE)
+_SCHEMA_WORDS = re.compile(
+    r"\b(what columns|which columns|list.*columns|column names|what fields|list.*fields|"
+    r"field names|what data|what properties|the schema|list.*properties)\b",
+    re.IGNORECASE,
+)
 _ROW_LOOKUP = re.compile(r"\brow\s*(?:index|number|#)?\s*(\d+)\b", re.IGNORECASE)
 _GROUPBY_WORDS = re.compile(r"\b(per|by|for each|each|breakdown (?:of|by))\b", re.IGNORECASE)
 _TOPN_WORDS = re.compile(r"\btop\s*(\d+)\b|\bhighest\s*(\d+)\b|\blowest\s*(\d+)\b", re.IGNORECASE)
@@ -313,7 +317,9 @@ def _list_intent(driver, database, question, columns):
 def _schema_intent(driver, database, question, columns):
     if not _SCHEMA_WORDS.search(question):
         return None
-    cypher = "MATCH (r:Row) RETURN keys(r) AS keys LIMIT 1"
+    # row_index/dataset_id are internal bookkeeping fields, not real CSV columns — exclude them
+    # from the raw result too, not just the phrased answer, so "View Cypher & result" stays clean.
+    cypher = "MATCH (r:Row) RETURN [k IN keys(r) WHERE NOT k IN ['row_index', 'dataset_id']] AS columns LIMIT 1"
     result = _run(driver, database, cypher, {})
     return {"answer": f"The columns are: {', '.join(columns)}.", "cypher": cypher, "result": result, "grounded": True}
 

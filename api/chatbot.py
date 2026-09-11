@@ -48,6 +48,10 @@ it with a LIMIT clause of 200 or fewer — this graph can hold thousands of rows
 `ORDER BY toFloat(...)`, `SUM`, `AVG`, `MIN`, or `MAX` on a property, always filter it with \
 `WHERE toFloat(r.prop) IS NOT NULL` first. Neo4j sorts NULL as the largest value, so an unfiltered \
 `ORDER BY ... DESC` puts rows with missing data at the top, ahead of real numbers — never do this.
+- A question asking what columns/fields/properties exist, or for the schema, IS answerable — it is \
+not "no relation to this data". `row_index` and `dataset_id` are internal bookkeeping fields, not \
+real CSV columns — exclude them. Write: \
+MATCH (r:Row) RETURN [k IN keys(r) WHERE NOT k IN ['row_index', 'dataset_id']] AS columns LIMIT 1
 - If the question cannot be answered from this schema at all (asks about something with no relation to \
 this data, or requires information not present), output exactly: {no_query}
 - A question whose honest answer is zero or empty (e.g. counting rows that don't exist) is still \
