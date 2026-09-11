@@ -44,6 +44,10 @@ DELETE, SET, REMOVE, DROP, or any write.
 that isn't in the columns list.
 - If the query returns individual rows/nodes (not just a count/sum/avg/min/max aggregate), always end \
 it with a LIMIT clause of 200 or fewer — this graph can hold thousands of rows.
+- Rows can have missing/null values for a property (hostile or ragged source CSVs). Before any \
+`ORDER BY toFloat(...)`, `SUM`, `AVG`, `MIN`, or `MAX` on a property, always filter it with \
+`WHERE toFloat(r.prop) IS NOT NULL` first. Neo4j sorts NULL as the largest value, so an unfiltered \
+`ORDER BY ... DESC` puts rows with missing data at the top, ahead of real numbers — never do this.
 - If the question cannot be answered from this schema at all (asks about something with no relation to \
 this data, or requires information not present), output exactly: {no_query}
 - A question whose honest answer is zero or empty (e.g. counting rows that don't exist) is still \
