@@ -1,6 +1,6 @@
 # REPORT — RISE @ RST #5: Data In, Answers Out
 
-_Draft — filled in as far as possible before the stack is verified end-to-end. Results table (9.4) and parts of 9.5/9.6 need a live run to finish; everything else below is locked._
+_Stack verified end-to-end live (fresh `docker compose down -v && up --build`, all 5 services). Results table (9.4) and 9.1/9.2 below are filled in from that live run. 9.5's timeline/dead-end and any further 9.6 items still need team input — not something a live run alone can honestly fill in._
 
 ## 9.1 What we built
 
@@ -17,10 +17,20 @@ Architecture: `ui` (browser) → `api` (`/ingest`, `/status`, `/chat`, `/health`
 (`csv-graph-db` — event's fixed name "CSV_Graph_DB" contains underscores, which Neo4j 5.x
 rejects in database names; read by both the loader and `api`'s `/chat`).
 
-**Status: working end to end, tested live.** `docker compose up -d --build` brings up all 5
-services; `/ingest` → Kafka → loader → Neo4j → `/status`/`/chat` all confirmed against real data
-(15-row and 5,000-row files), including idempotent re-uploads and hostile-input handling. Two real
-bugs were caught and fixed during this testing pass (not before) — see 9.5/9.6.
+**Status: working end to end, verified live.** A fresh `docker compose down -v && up --build`
+brings up all 5 services; `/ingest` → Kafka → loader → Neo4j → `/status`/`/chat` all confirmed
+against real data (6, 15, and 5,000-row files). Idempotency holds at every scale tested, including
+two overlapping uploads racing each other — final counts always settle to the true total, never
+double. All of the handout's hostile-input CSVs (empty, header-only, non-CSV, ragged/broken) are
+rejected cleanly or ingested without crashing. All 12 of `test_data/expected_answers.md`'s
+hand-computed questions now answer correctly against a freshly-reset single-dataset graph — see 9.4
+for exact wording and two nuances worth knowing honestly rather than glossed over.
+
+Two real bugs were caught and fixed during this testing pass, not before — both only surfaced on an
+actual `docker compose up`, never in host-side testing: a `groq`/`httpx` version mismatch (9.3), and
+a missing Dockerfile `COPY` for the chatbot modules that crash-looped the `api` container (9.6). A
+third, the deterministic chatbot's zero-result bug (9.4 #3), was caught and fixed the same way —
+verified live post-fix, not just claimed.
 
 ## 9.2 The data and the graph model
 
@@ -37,11 +47,17 @@ Graph model — generic, one property per CSV column, unchanged regardless of wh
 `id` (`dataset_id`) is the SHA-256 hex digest of the raw CSV file bytes — same file always maps
 to the same id, which is what makes idempotent re-loading work without extra bookkeeping.
 
-Observed live: `small_clean.csv` → 15 `:Row` nodes, 15 `:HAS_ROW` relationships, 1 `:Dataset` node
-(re-uploading the same file a second time left all three counts unchanged — verified directly via
-`cypher-shell`, not just the `/status` counters). `large.csv` → 5,000/5,000 rows loaded, 0 failed,
-`status: complete`. `broken.csv`'s ragged/stray-comma rows loaded without crashing (tolerated per
-design, not rejected — see 9.6).
+Observed counts from a live run (fresh volumes, one file per `Dataset`), cross-checked directly via
+`cypher-shell` against the `:Row`/`:HAS_ROW` graph itself, not just the `/status` API counters:
+
+| File | Rows sent | `rows_loaded` | `rows_failed` | `:Row` nodes | `HAS_ROW` rels | Notes |
+|---|---|---|---|---|---|---|
+| `small_clean.csv` | 15 | 15 | 0 | 15 | 15 | Re-uploaded twice; counts stayed at 15, not 30 |
+| `large.csv` | 5,000 | 5,000 | 0 | 5,000 | 5,000 | Re-uploaded twice, including a second upload issued before the first had fully finished loading; counts still settled to 5,000, not 10,000 |
+| `broken.csv` | 6 | 6 | 0 | 6 | 6 | No header row at all, so the CSV parser treats the first data row as column names — every row lands with garbled property keys (e.g. a property literally named `"Acme Co"`) instead of `customer`/`group`/`amount`. Doesn't crash, satisfies "fails politely," but the data itself is junk. See 9.6. |
+| `empty.csv` | — | — | — | — | — | Rejected at `/ingest` with 400 `"empty file"` — never reaches Kafka/Neo4j |
+| `header_only.csv` | — | — | — | — | — | Rejected at `/ingest` with 400 `"CSV has a header but zero data rows"` |
+| `not_a_csv.txt` | — | — | — | — | — | Rejected at `/ingest` with 400 `"file must be a .csv"` |
 
 ## 9.3 Methods
 
@@ -55,42 +71,82 @@ design, not rejected — see 9.6).
 | Kafka client | `confluent-kafka` (librdkafka) | `kafka-python` | `kafka-python`'s maintenance/compatibility with newer KRaft-mode brokers is a known risk; `confluent-kafka` is the actively-maintained, battle-tested client |
 | Neo4j database name | `csv-graph-db` | Event's literal fixed name `CSV_Graph_DB` | Neo4j 5.x database names may only contain letters, digits, dots, and dashes — no underscores. The literal name is rejected by Neo4j itself at startup; substituting dashes is the minimal necessary deviation, documented here per the handout's request to explain stack deviations |
 | `groq` SDK version | `groq==0.37.1` | `groq==0.11.0` (initial pin) | The old version passes a now-removed `proxies` argument to `httpx.Client()`; our unpinned `httpx` resolved to 0.28.1 at build time, which rejects it. Container-only failure — host-side testing didn't catch it because the host already had a compatible version pair installed from earlier work. Caught by the first live `/chat` test after the stack came up, not before |
+| Neo4j container user | `user: "7474:7474"` (image's built-in non-root user) | Default (runs as root) | Requirement #9 is mandatory; the official Neo4j image defaults to root and needed an explicit override. Caught by directly checking `docker exec ... whoami` on every container, not by assumption — Kafka, api, loader, and ui were all already correctly non-root, only Neo4j wasn't |
+| `MARK_FAILED` Dataset lookup | `MERGE` (create-if-missing) | `MATCH` (assume it exists) | Verified live: if the *first* row processed for a dataset is also the one that fails, no `:Dataset` node exists yet — a `MATCH` silently finds nothing and the failure is dropped with zero trace (no `rows_failed` increment anywhere). Reproduced by manually publishing a Neo4j-incompatible row directly to Kafka, bypassing `/ingest` |
 | Status counter idempotency | `rows_loaded`/`rows_failed` incremented only on genuine first-creation of a `:Row`/`:FailedRow` node (Cypher `FOREACH`-conditional-`SET` idiom, since Cypher has no native conditional `SET`) | Unconditional `SET d.rows_loaded = d.rows_loaded + 1` after every `MERGE` | The handout explicitly supports replaying the Kafka topic to reload the graph, and any loader restart mid-run re-consumes some already-processed messages before the next auto-commit checkpoint — both would silently double-count `rows_loaded` under the naive approach even though the underlying `:Row` nodes stayed correctly idempotent |
 | How api knows kafka/neo4j are ready | Docker Compose healthchecks (`condition: service_healthy`) + retry-on-connection-refused in api/loader connection code | `depends_on` alone | `depends_on` only waits for container start, not Kafka leader election or Neo4j accepting Bolt connections |
 
 ## 9.4 Results
 
-Tested live against `small_clean.csv` (15 rows), both chatbot tiers (LLM via Groq, and the
-deterministic tier tested standalone with `GROQ_API_KEY` unset — see [test_data/expected_answers.md](test_data/expected_answers.md)
-for the hand-computed expected values):
+Run live against `small_clean.csv` alone in a freshly-reset graph (`docker compose down -v`),
+against all 12 of [test_data/expected_answers.md](test_data/expected_answers.md)'s questions:
 
-| Question asked | Answer given | Correct? | Grounded? |
-|---|---|---|---|
-| How many rows are there? | "There are 15 rows." | Yes | true |
-| How many rows belong to the Billing group? | "There are 6 rows belonging to the Billing group." | Yes | true |
-| How many rows belong to Nonexistent? | "The count is 0." | Yes | **true** (zero is a real answer) |
-| What is the average amount for Billing? | "The average amount for Billing is 218.0." | Yes | true |
-| What is the capital of France? | "I don't have that in the data." | Yes (correctly refused) | false |
-| Write a C program to reverse a string | "I don't have that in the data." | Yes (correctly refused, see adversarial testing below) | false |
-| List all rows (against `large.csv`, 5,021 rows loaded at test time) | Returned exactly 200 rows, not all 5,021 | Yes (capped by design) | true |
-| How many rows are there? (deterministic tier only, `GROQ_API_KEY` unset) | "There are 15 rows in total." | Yes | true |
-| How many rows belong to the Billing group? (deterministic tier only) | "There are 6 rows where group = 'Billing'." | Yes | true |
-| How many rows belong to Nonexistent? (deterministic tier only) | Returns `None` from the matcher → falls through to honest "I don't have that" | Yes | false |
+| # | Question asked | Answer given | Correct? | Grounded? |
+|---|---|---|---|---|
+| 1 | How many rows are there? | 15 | ✅ | true |
+| 2 | How many rows belong to the Billing group? | 6 | ✅ | true |
+| 3 | How many rows belong to Nonexistent? | "I don't have that in the data." | ✅ (honest refusal — see note) | false |
+| 4 | What is the average amount for Billing? | 218.0 | ✅ | true |
+| 5 | What is the total amount for Engineering? | 5140.0 | ✅ | true |
+| 6 | How many rows have amount over 500? | 5 | ✅ | true |
+| 7 | How many rows have amount under 100? | 4 | ⚠️ see note | true |
+| 8 | What are the different groups? | Billing, Engineering, Support | ✅ (alphabetical, not upload order — fine) | true |
+| 9 | How many rows per group? | Billing: 6, Engineering: 5, Support: 4 | ✅ | true |
+| 10 | Top 3 rows by amount? | Crestline Auto (1500), Quantum Labs (1200), Pioneer Foods (990) | ✅ | true |
+| 11 | What is the capital of France? | "I don't have that in the data." | ✅ | false (correctly refuses) |
+| 12 | Show row 0? | Acme Co, Billing, 128 | ✅ | true |
 
-**One real bug this testing caught and fixed:** the deterministic tier's "how many rows belong to
-Nonexistent?" originally silently fell back to the *unfiltered* total-row count instead of
-recognizing the filter couldn't be resolved — answering the wrong question with a confident-sounding
-number. Fixed by detecting filter-intent words ("belong", "where", "for", etc.) and returning "no
-match" instead of guessing when those are present but no value resolves; see `_FILTER_INTENT_WORDS`
-in `api/chatbot_deterministic.py`.
+**12/12 correct on the deterministic tier. Important caveat on how this was tested — read before
+trusting this table at face value:**
 
-**Adversarial groundedness testing:** ran 10+ adversarial prompts against the LLM tier — general
-code-generation requests, prompt injection ("ignore previous instructions"), general knowledge
-questions, disguised delete requests, compound "show me X then delete it" phrasing. Every one
-correctly returned `NO_QUERY` from the model. Independently verified the code-level gate
-(`validate_read_only`) also rejects hand-crafted malicious Cypher that *starts* with a valid `MATCH`
-but sneaks in a write clause later (`DETACH DELETE`, `WITH r DELETE r`, `SET r.amount = 0`,
-`RETURN r UNION CREATE (x:Evil)`) — so the defense doesn't rely on the model behaving.
+- **`.env`'s `GROQ_API_KEY` is still the placeholder value during all of this session's testing**
+  (confirmed via `docker compose exec api env`), so every `/chat` call above — and every one earlier
+  in this testing pass — went through the **deterministic tier only**, never the LLM tier. Its
+  templated phrasing ("There are N rows...") is easy to mistake for LLM prose, which is worth
+  knowing before assuming any of this exercised Groq. **The LLM-specific claims below (this session
+  did not independently verify them) are relayed from the chatbot owner's own report draft, not
+  re-confirmed here — someone with a real `GROQ_API_KEY` needs to actually run them before they
+  count as tested:** LLM-generated Cypher phrasing quality, and the code-level `validate_read_only`
+  gate's rejection of hand-crafted malicious Cypher that starts with a valid `MATCH` but sneaks in a
+  later write clause (`DETACH DELETE`, `WITH r DELETE r`, `SET r.amount = 0`,
+  `RETURN r UNION CREATE (x:Evil)`). This session *did* spot-check 3 adversarial prompts (prompt
+  injection, a disguised delete request, a code-generation request) against the deterministic tier
+  as it's actually configured right now — all three correctly refused with `grounded: false` — but
+  that only proves the deterministic tier's fallback is safe, not that the LLM tier's Cypher
+  validator holds up against a model that actually tries to generate something unsafe.
+- **#3 was a genuine bug, now fixed and verified live.** `chatbot_deterministic.py`'s filter matcher
+  used to only recognize a value as a filter candidate by scanning the graph's *actual* distinct
+  column values — so a value that legitimately isn't in the data, like "Nonexistent," could never
+  match, and the question silently fell through to an unrelated "count all rows" intent (previously
+  observed live: "There are 15 rows in total.", `grounded: true` — a confidently wrong answer to a
+  question the system never attempted). Now fixed via `_FILTER_INTENT_WORDS` detecting filter-intent
+  phrasing ("belong", "where", "for", etc.) and returning an honest refusal instead of guessing when
+  no value resolves. One nuance: the fixed behavior is an honest `grounded: false` refusal, not the
+  ideal `grounded: true, count: 0` (zero is a valid, grounded answer per the handout's own rule) —
+  still a large improvement (honest refusal beats a confident wrong answer), just not the textbook
+  case. Worth a follow-up if time allows: have the matcher recognize "no rows match" as a valid
+  zero-result equality query rather than declining to answer at all.
+- **#7's expected answer in `expected_answers.md` (3) is itself wrong**, independently verified by
+  hand: Support's values are 75, 60, 120, 95 — three of those (75, 60, 95) are under 100, plus
+  Billing's 45, for **4** total, not 3. The live system's answer of 4 is the mathematically correct
+  one; the test fixture's hand-computed expectation has an arithmetic slip. Recommend fixing
+  `expected_answers.md` rather than the code here.
+
+Also worth recording: `large.csv` (5,021 rows loaded at one point during broader testing) — asking
+to list all rows returned exactly 200, not all 5,021, i.e. capped by design rather than dumping the
+graph.
+
+**`/health` degradation, tested by actually killing dependencies** (not just reading the code):
+stopped the `kafka` container → `/health` correctly returned `{"status":"not_ok","kafka_connected":false,"neo4j_connected":true}`; restarted it → recovered to `ok` within seconds. Repeated for `neo4j` with the same correct result both ways.
+
+**`rows_failed`, tested by actually triggering a genuine write failure** (not just reading the code):
+our hostile-input CSVs all load "successfully" by design (ragged rows tolerated), so this path was
+otherwise never exercised. Bypassed `/ingest` and published a row with a nested-object property value
+directly to Kafka — Neo4j correctly rejected it (`Neo.ClientError.Statement.TypeError`), the loader
+caught it, and `rows_failed` incremented correctly, with `status` reaching `complete` once
+`rows_loaded + rows_failed == rows_total`. Replaying the identical failing message a second time left
+`rows_failed` at 1, not 2 — confirmed the `:FailedRow` idempotency guard also holds. This test run is
+what surfaced the `MARK_FAILED` bug fixed above.
 
 ## 9.5 How we worked
 
@@ -144,7 +200,24 @@ One dead end: initially picked `llama-3.3-70b-versatile` as the Groq model (matc
   same-name-different-content re-upload both just work as expected/new datasets respectively; this
   is fine for us but worth stating explicitly.
 
-_[Fill in more as we discover them during testing.]_
+- **`/chat` is not scoped to a single dataset** (documented as an explicit assumption in
+  `PROBLEM_STATEMENT.md`, with the caveat "revisit if we end up demoing multiple distinct CSVs side
+  by side" — that caveat is now live). Once more than one CSV has ever been uploaded to a given
+  Neo4j instance, aggregate questions like "how many rows are there" answer across the *union* of
+  every dataset ever loaded, not just the most recent one. Confirmed live: after uploading
+  `small_clean.csv` (15), `broken.csv` (6), and `large.csv` (5,000) into the same instance, "how
+  many rows are there" answered 5,021. **Recommend `docker compose down -v` immediately before the
+  actual demo/grading run**, so the graph starts empty and matches whatever single CSV gets
+  demoed — otherwise every aggregate answer will be inflated by leftover test data.
+- **The deterministic chatbot's zero-result bug** (see 9.4 #3 above) — repeated here since it's a
+  correctness gap, not just a results-table footnote.
+- `broken.csv` has no header row at all (by design, to test "missing header" per the handout), and
+  the CSV parser can't distinguish "no header" from "a valid header" — it silently treats the first
+  data row as column names. The row loads without crashing (satisfies "fails politely"), but its
+  properties are garbage (e.g. a property key literally named `"Acme Co"`), which is visible if that
+  row ever surfaces in a `/chat` answer. Not fixed — flagging as a known, inherent limitation of
+  using a plain CSV parser for this case rather than something worth engineering around given time
+  constraints.
 
 ## 9.7 How to run it
 

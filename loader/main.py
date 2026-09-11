@@ -39,8 +39,13 @@ SET d.status = CASE WHEN d.rows_loaded + d.rows_failed >= d.rows_total THEN 'com
 
 # Same idempotency concern as above: a failing row_index must only count once per dataset_id even if the
 # same CSV (and thus the same failure) is re-published, so a FailedRow marker node gates the increment.
+# Uses MERGE (not MATCH) for the Dataset node: if the very first row processed for a dataset is the
+# one that fails, no Dataset node exists yet — a MATCH would silently find nothing and drop the
+# failure entirely (verified live: this happened before this fix), leaving rows_failed untracked.
 MARK_FAILED = """
-MATCH (d:Dataset {id: $dataset_id})
+MERGE (d:Dataset {id: $dataset_id})
+  ON CREATE SET d.filename = $filename, d.uploaded_at = $uploaded_at,
+                d.rows_total = $rows_total, d.rows_loaded = 0, d.rows_failed = 0, d.status = 'loading'
 MERGE (f:FailedRow {dataset_id: $dataset_id, row_index: $row_index})
   ON CREATE SET f._new = true
   ON MATCH SET f._new = false
@@ -115,7 +120,18 @@ def main():
             log.error("failed to load dataset=%s row_index=%s: %s", dataset_id, row_index, e)
             try:
                 with driver.session(database=NEO4J_DATABASE) as session:
-                    session.run(MARK_FAILED, dataset_id=dataset_id, row_index=row_index)
+                    # filename/uploaded_at/rows_total are required here too, not just row_index —
+                    # MARK_FAILED's Cypher MERGEs (not MATCHes) the Dataset node, since a failure on
+                    # the very first row processed for a dataset would otherwise have no node to
+                    # attach to (verified live, see REPORT.md).
+                    session.run(
+                        MARK_FAILED,
+                        dataset_id=dataset_id,
+                        row_index=row_index,
+                        filename=msg["filename"],
+                        uploaded_at=msg["uploaded_at"],
+                        rows_total=msg["rows_total"],
+                    )
                 log.info("marked failed row for dataset=%s row_index=%s", dataset_id, row_index)
             except Exception as e2:
                 log.error("failed to mark row as failed: %s", e2)

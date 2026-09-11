@@ -15,7 +15,7 @@ Engineering×5 (990, 1500, 800, 1200, 650).
 | 4 | What is the average amount for Billing? | 218 | true |
 | 5 | What is the total amount for Engineering? | 5140 | true |
 | 6 | How many rows have amount over 500? | 5 | true |
-| 7 | How many rows have amount under 100? | 3 | true |
+| 7 | How many rows have amount under 100? | 4 (75, 60, 45, 95) | true |
 | 8 | What are the different groups? | Billing, Support, Engineering | true |
 | 9 | How many rows per group? | Billing: 6, Support: 4, Engineering: 5 | true |
 | 10 | Top 3 rows by amount? | Crestline Auto (1500), Quantum Labs (1200), Pioneer Foods (990) | true |

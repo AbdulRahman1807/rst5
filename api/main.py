@@ -6,7 +6,7 @@ import logging
 import os
 import time
 
-from confluent_kafka import Producer
+from confluent_kafka import Producer, KafkaException
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from neo4j import GraphDatabase
@@ -43,6 +43,9 @@ _driver = None
 
 
 def get_producer() -> Producer:
+    # confluent_kafka's Producer connects lazily/in the background and doesn't raise at
+    # construction time even if the broker isn't reachable yet, so no retry-on-connect is
+    # needed here (unlike loader's Consumer, which does a synchronous list_topics probe).
     global _producer
     if _producer is None:
         _producer = Producer({"bootstrap.servers": KAFKA_BROKERS})
@@ -106,29 +109,38 @@ async def ingest(file: UploadFile = File(...)):
 
     jobs[dataset_id] = {"rows_received": rows_total, "received_at": uploaded_at}
 
-    producer = get_producer()
+    delivery_errors = []
 
     def _on_delivery(err, msg):
         if err is not None:
             log.error("kafka delivery failed for dataset=%s: %s", dataset_id, err)
+            delivery_errors.append(err)
 
-    for i, row in enumerate(rows):
-        message = {
-            "dataset_id": dataset_id,
-            "filename": file.filename,
-            "uploaded_at": uploaded_at,
-            "row_index": i,
-            "rows_total": rows_total,
-            "row": row,
-        }
-        producer.produce(
-            KAFKA_TOPIC,
-            key=dataset_id.encode("utf-8"),
-            value=json.dumps(message).encode("utf-8"),
-            callback=_on_delivery,
-        )
-        producer.poll(0)  # serve delivery callbacks without blocking; keeps the internal queue draining
-    producer.flush(timeout=30)
+    try:
+        producer = get_producer()
+        for i, row in enumerate(rows):
+            message = {
+                "dataset_id": dataset_id,
+                "filename": file.filename,
+                "uploaded_at": uploaded_at,
+                "row_index": i,
+                "rows_total": rows_total,
+                "row": row,
+            }
+            producer.produce(
+                KAFKA_TOPIC,
+                key=dataset_id.encode("utf-8"),
+                value=json.dumps(message).encode("utf-8"),
+                callback=_on_delivery,
+            )
+            producer.poll(0)  # serve delivery callbacks without blocking; keeps the internal queue draining
+        producer.flush(timeout=30)
+    except (BufferError, KafkaException) as e:
+        log.error("kafka publish failed for dataset=%s: %s", dataset_id, e)
+        raise HTTPException(status_code=503, detail="kafka temporarily unavailable, please retry")
+
+    if delivery_errors:
+        raise HTTPException(status_code=503, detail="kafka temporarily unavailable, please retry")
 
     return {"job_id": dataset_id, "rows_received": rows_total, "status": "queued"}
 
