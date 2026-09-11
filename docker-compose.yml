@@ -17,6 +17,13 @@ services:
       CLUSTER_ID: ciWo0R1yRuWCXbdBz9G3yA
     ports:
       - "9092:9092"
+    volumes:
+      # Explicit named volume, not the image's implicit anonymous ones — anonymous volumes were
+      # observed NOT being reliably removed by `docker compose down -v` in this environment,
+      # causing Kafka topic data (and therefore loaded row counts) to survive a "clean" reset.
+      # Named volumes are removed reliably by `down -v`. Required for the judges' reproducibility
+      # check (handout: "down -v" then "up" on the same CSV must show identical counts).
+      - kafka_data:/var/lib/kafka/data
     healthcheck:
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
       interval: 5s
@@ -40,6 +47,11 @@ services:
     ports:
       - "7474:7474"
       - "7687:7687"
+    volumes:
+      # Same reasoning as kafka's named volume above — the image's implicit anonymous /data and
+      # /logs volumes were observed surviving `docker compose down -v`.
+      - neo4j_data:/data
+      - neo4j_logs:/logs
     healthcheck:
       test: ["CMD-SHELL", "cypher-shell -u neo4j -p ${NEO4J_PASSWORD:-csvgraphdb} 'RETURN 1'"]
       interval: 5s
@@ -113,3 +125,8 @@ networks:
   pipeline-net:
     name: pipeline-net
     driver: bridge
+
+volumes:
+  kafka_data:
+  neo4j_data:
+  neo4j_logs:
