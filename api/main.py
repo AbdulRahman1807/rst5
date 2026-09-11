@@ -12,6 +12,8 @@ from kafka.errors import NoBrokersAvailable
 from neo4j import GraphDatabase
 from neo4j.exceptions import ServiceUnavailable, AuthError
 
+import chatbot
+
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("api")
 
@@ -82,6 +84,8 @@ async def ingest(file: UploadFile = File(...)):
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="empty file")
+    if not (file.filename or "").lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="file must be a .csv")
 
     dataset_id = hashlib.sha256(raw).hexdigest()
 
@@ -143,13 +147,5 @@ def status(job_id: str):
 
 @app.post("/chat")
 def chat(payload: dict):
-    # TODO(you — LLM chatbot + Neo4j): replace with real Groq text->Cypher generation,
-    # read-only validation, execution against Neo4j, and code-computed `grounded`.
-    # See IMPLEMENTATION_PLAN.md "Data & message contracts" and "Key technical decisions".
     question = payload.get("question", "")
-    return {
-        "answer": "Chatbot not wired up yet — this is a stub.",
-        "cypher": None,
-        "result": None,
-        "grounded": False,
-    }
+    return chatbot.answer_question(get_driver(), NEO4J_DATABASE, question)
