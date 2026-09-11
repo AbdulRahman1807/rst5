@@ -8,7 +8,8 @@ Following the handout's suggested stack (fastest path to finishing inside the ti
 - **API:** FastAPI (async support helps with Kafka, validates request bodies for free)
 - **UI:** [To decide — Nitika] Plain HTML + fetch (fastest, zero build step) or React if she's faster in it. Either is fine per the handout; a working ugly UI beats a broken pretty one, so don't let a React build/tooling setup eat into the 0:35–1:00 window in the timeline below — if React setup stalls, fall back to plain HTML + fetch immediately rather than debugging it further.
 - **Broker:** Apache Kafka, single broker, KRaft mode (`apache/kafka:3.7.0`, pinned) — no ZooKeeper needed
-- **Graph DB:** Neo4j 5.x Community (`neo4j:5.24-community`, pinned), instance `CSV_Graph_DB`
+- **Kafka client:** `confluent-kafka` (librdkafka-based) — not `kafka-python`, whose compatibility with modern KRaft-mode brokers is a known risk; see REPORT.md methods table
+- **Graph DB:** Neo4j 5.x Community (`neo4j:5.24-community`, pinned), instance `csv-graph-db` (event's fixed name `CSV_Graph_DB` contains underscores, which Neo4j 5.x database names cannot — deviation documented in REPORT.md)
 - **Driver:** Official Neo4j Python driver — never hand-roll Bolt/HTTP calls
 - **Chatbot:** GroqCloud API (LLM confirmed allowed) — `groq` Python SDK or plain HTTPS calls to its OpenAI-compatible endpoint. Used for text→Cypher generation and/or answer phrasing; never for answering from general knowledge.
 - **Base images:** `python:3.11-slim` for api/loader; all pinned, `pip install --no-cache-dir` to keep images small
@@ -45,23 +46,31 @@ All five wired together in one `docker-compose.yml`.
 ### Where job status and row counts are persisted
 Two stores, cleanly separated so `api` never writes CSV content to Neo4j directly (requirement #2):
 - **`api` in-memory dict** `jobs[job_id] = {rows_received, received_at}` — written synchronously during `/ingest`, before anything is published to Kafka. This is bookkeeping about *the upload itself*, not CSV content, so it doesn't violate requirement #2. Known limitation (document in `REPORT.md`): this is lost on an `api` restart — acceptable for a 3-hour demo since it only covers the brief "queued, nothing consumed yet" window.
-- **Neo4j `:Dataset` node** — the durable, authoritative store for everything past "queued." The **loader** (never `api`) creates/updates it as it consumes `csv-rows`:
+- **Neo4j `:Dataset` node** — the durable, authoritative store for everything past "queued." The **loader** (never `api`) creates/updates it as it consumes `csv-rows`. `rows_loaded`/`rows_failed` must only increment on a row's genuine first appearance — a bare unconditional `SET rows_loaded = rows_loaded + 1` after `MERGE` double-counts on Kafka replay (which the handout explicitly supports) or any loader restart before the next auto-commit checkpoint, even though the `:Row` node itself stays correctly idempotent. Cypher has no native conditional `SET`, so this uses the standard `FOREACH`-over-0-or-1-list idiom, gated by a temporary marker property that's removed before the transaction ends:
   ```cypher
   MERGE (d:Dataset {id: $dataset_id})
     ON CREATE SET d.filename = $filename, d.uploaded_at = $uploaded_at,
                   d.rows_total = $rows_total, d.rows_loaded = 0,
                   d.rows_failed = 0, d.status = 'loading'
   MERGE (r:Row {dataset_id: $dataset_id, row_index: $row_index})
-    ON CREATE SET r += $row
+    ON CREATE SET r += $row, r._new = true
+    ON MATCH SET r._new = false
   MERGE (d)-[:HAS_ROW]->(r)
-  SET d.rows_loaded = d.rows_loaded + 1,
-      d.status = CASE WHEN d.rows_loaded + d.rows_failed >= d.rows_total THEN 'complete' ELSE 'loading' END
+  WITH d, r
+  FOREACH (_ IN CASE WHEN r._new THEN [1] ELSE [] END | SET d.rows_loaded = d.rows_loaded + 1)
+  REMOVE r._new
+  SET d.status = CASE WHEN d.rows_loaded + d.rows_failed >= d.rows_total THEN 'complete' ELSE 'loading' END
   ```
-  On a write failure for a row, instead run:
+  On a write failure for a row, the same idempotency concern applies (a re-processed failure must only count once), gated by a `:FailedRow` marker node keyed the same way as `:Row`:
   ```cypher
   MATCH (d:Dataset {id: $dataset_id})
-  SET d.rows_failed = coalesce(d.rows_failed, 0) + 1,
-      d.status = CASE WHEN d.rows_loaded + d.rows_failed >= d.rows_total THEN 'complete' ELSE 'loading' END
+  MERGE (f:FailedRow {dataset_id: $dataset_id, row_index: $row_index})
+    ON CREATE SET f._new = true
+    ON MATCH SET f._new = false
+  WITH d, f
+  FOREACH (_ IN CASE WHEN f._new THEN [1] ELSE [] END | SET d.rows_failed = coalesce(d.rows_failed, 0) + 1)
+  REMOVE f._new
+  SET d.status = CASE WHEN d.rows_loaded + d.rows_failed >= d.rows_total THEN 'complete' ELSE 'loading' END
   ```
 - **`GET /status?job_id=X`** logic: unknown `job_id` (not in `api`'s in-memory dict) → 404. Known but no `:Dataset` node in Neo4j yet → `status: "queued"`, `rows_total` from the in-memory dict, `rows_loaded`/`rows_failed`: 0. `:Dataset` node exists → return its fields directly (Neo4j is authoritative once loading has started).
 
@@ -73,10 +82,10 @@ Two stores, cleanly separated so `api` never writes CSV content to Neo4j directl
 | Status persistence | `api` holds an in-memory `{job_id: rows_received}` for the pre-load window; the loader owns the durable `:Dataset` node in Neo4j (rows_loaded/rows_failed/status) | Keeps all CSV-derived writes coming only from the loader via Kafka (requirement #2), while `/status` stays cheap to serve |
 | Readiness check | Healthchecks on kafka + neo4j, `condition: service_healthy` in compose, plus retry-on-connection-refused in api/loader code | `depends_on` alone only waits for container start, not Kafka leader election or Neo4j accepting Bolt |
 | Graph model | Generic `Dataset -[:HAS_ROW]-> Row` with one property per column | Handout explicitly says this is enough to pass; only enrich if time remains |
-| Chatbot approach | LLM (GroqCloud) generates Cypher from the question and phrases the final answer | Confirmed allowed; gives a real conversational feel instead of rigid templates, while the handout still lets an LLM be used this way |
+| Chatbot approach | **Two-tier**: a deterministic keyword/value→Cypher matcher (`chatbot_deterministic.py`) that needs no LLM and works standalone, plus an LLM (GroqCloud) tier used when `GROQ_API_KEY` is configured for handling more question phrasings. LLM tier falls back to the deterministic tier on any failure, which falls back to an honest "I don't have that" | An evaluator questioned "why LLM if you're not generating new data" — the honest answer is the pipeline doesn't need one; template/keyword matching against Kafka-loaded graph data already satisfies the handout's "as simple as matching a question to a Cypher query template" option. The LLM is a flexibility enhancement, not a dependency — demoable by unsetting `GROQ_API_KEY` and showing the system still answers correctly |
 | Grounding enforcement | Always execute the LLM-generated Cypher for real; `grounded` is set by **code**, not by the LLM, based on whether the query executed successfully against a real schema — **not** on whether the result set is empty. A valid zero-count aggregate is still `grounded: true` | The handout requires proof, not a confident-sounding claim; zero is a legitimate answer and must not be confused with "couldn't answer" |
 | Cypher safety | Validate the LLM's generated query is read-only (allowlist `MATCH`/`RETURN`/`WHERE`/aggregations). If it contains any write clause (`CREATE`, `MERGE`, `DELETE`, `SET`, `REMOVE`, `DROP`) or fails validation, **reject the query outright** — do not attempt to strip/sanitize and run a mutilated version — and respond `grounded: false` | Rewriting an unsafe query into a "safe" one is itself a correctness risk (silently changes what's being asked); refusing to run it is simpler and honest, in the same spirit as Part 1 |
-| LLM outage fallback | If the Groq API call fails/times out, return `grounded: false` with a plain "couldn't process that right now" instead of crashing `/chat` | `/chat` must degrade gracefully, same spirit as the hostile-input requirement (6.7) |
+| LLM outage fallback | If the Groq API call fails/times out/produces an invalid or unsafe query, fall back to the deterministic matcher rather than an apology; only if *that* also can't answer does `/chat` return the honest "I don't have that" | Real degradation path, not just an apology — the deterministic tier is a fully working answer engine on its own, so a Groq hiccup shouldn't cost us a correct, grounded answer |
 | Credentials | Neo4j password **and** `GROQ_API_KEY` via env var / `.env`, never hard-coded or baked into image | Explicit mandatory requirement for Neo4j creds; same standard applied to the Groq key |
 
 ## Tasks in priority order
@@ -94,7 +103,7 @@ Following the handout's own advice: **build the pipe with fake logic before the 
    b. Real ingest + loader — actual CSV rows published per-row to Kafka, consumed, `MERGE`d into Neo4j.
    c. Real `/status` — true row counts (loaded + failed), real `queued/loading/complete/failed`.
    d. Real `/health` — genuinely checks Kafka + Neo4j reachability.
-   e. Real `/chat` — send the question (+ a short description of the graph schema/columns) to Groq, get back a Cypher query. Validate it's read-only; if it fails validation, **reject it outright** (`grounded: false`, no execution attempt). Otherwise execute it against Neo4j, then have the LLM (or a template) phrase the answer from the real result. Set `grounded` in code from whether the query executed successfully — a valid zero-result aggregate is still `grounded: true`. Return `answer` + `cypher` + `result` + `grounded`.
+   e. Real `/chat` — **two-tier** (done): if `GROQ_API_KEY` is configured, send the question + schema/columns to Groq, get back a Cypher query, validate it's read-only (reject outright if not), execute it, phrase the answer from the real result. On any failure in that path, fall back to the deterministic keyword/value matcher, which builds Cypher programmatically (no LLM needed) for count/list/status-shaped questions. `grounded` is set in code from whether a query actually executed — a valid zero-result aggregate is still `grounded: true`. Return `answer` + `cypher` + `result` + `grounded`.
 9. Hardening: non-root containers, pin all image tags, handle hostile input (empty CSV, header-only CSV, non-CSV file, question before upload, unanswerable question, Groq API failure/timeout).
 10. Verify idempotency: run the same CSV twice, confirm identical counts.
 11. Write `REPORT.md` (see handout Part 9 for exact sections).
@@ -130,7 +139,6 @@ Nitika is timekeeper — call out each checkpoint aloud as it's reached.
 
 ## What to cut first if we run out of time
 In this order (stretch goals only — must-haves are not cuttable):
-0. If the Groq integration is eating too much time or proves flaky, fall back to a small deterministic question→Cypher template map for the demo (still satisfies the must-have chat contract — chatbot cleverness is only 10/100 marks either way; see [SOLUTION_ANALYSIS.md](SOLUTION_ANALYSIS.md)).
 1. Foreign-key-style column detection / relationship enrichment.
 2. Live progress bar in UI (a spinner is fine).
 3. p95 latency measurement and image-size optimization.

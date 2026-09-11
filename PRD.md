@@ -24,7 +24,7 @@ Directly from the handout's Part 7.1 (this **is** our MVP definition — not up 
 - [ ] `GET /health` — honest, reports not-ok until Kafka + Neo4j are truly reachable.
 - [ ] `GET /status` — real `queued|loading|complete|failed` with real row counts (loaded + failed = received before "complete").
 - [ ] `POST /chat` — matches the Part 4 contract exactly (`answer`, `cypher`, `result`, `grounded`).
-- [ ] Chatbot is LLM-powered via the GroqCloud API: LLM turns the question into Cypher (and/or phrases the final answer), Cypher is actually executed against Neo4j, and the phrased answer is grounded in the real result — never in the LLM's general knowledge.
+- [ ] Chatbot is two-tier: a deterministic keyword/value→Cypher matcher that works with zero LLM dependency, plus an optional GroqCloud LLM tier (when `GROQ_API_KEY` is set) that turns the question into Cypher and/or phrases the answer — Cypher is always actually executed against Neo4j, and the phrased answer is grounded in the real result, never in the LLM's general knowledge. LLM failures fall back to the deterministic tier automatically.
 - [ ] Ungrounded questions return `grounded: false` and an honest "I don't have that in the data" — never a guess, even if the LLM would otherwise produce a plausible-sounding sentence. (A valid zero-result aggregate, e.g. a count of 0, is still `grounded: true` — see [PROBLEM_STATEMENT.md](PROBLEM_STATEMENT.md) requirement #7 clarification.)
 - [ ] All base images pinned to a version (no `latest`).
 - [ ] Containers run as non-root.

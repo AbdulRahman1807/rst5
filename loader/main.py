@@ -2,8 +2,8 @@ import json
 import logging
 import os
 import time
-from kafka import KafkaConsumer
-from kafka.errors import NoBrokersAvailable
+
+from confluent_kafka import Consumer, KafkaException
 from neo4j import GraphDatabase
 from neo4j.exceptions import ServiceUnavailable, AuthError
 
@@ -14,75 +14,111 @@ KAFKA_BROKERS = os.getenv("KAFKA_BROKERS", "kafka:9092")
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "csvgraphdb")
-NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "CSV_Graph_DB")
+NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "csv-graph-db")
 KAFKA_TOPIC = "csv-rows"
 
-MERGE_DUMMY_QUERY = """
+# Idempotent per IMPLEMENTATION_PLAN.md: MERGE keyed on dataset_id (sha256 of file) + row_index, never CREATE.
+# rows_loaded/rows_failed must only increment the first time a given row_index is seen for a dataset_id,
+# so re-publishing the same CSV (same dataset_id) leaves counts unchanged on repeat runs. A bare
+# `SET d.rows_loaded = d.rows_loaded + 1` after a MERGE would double-count on every re-run since it fires
+# whether or not the Row node was actually just created — hence the ON CREATE/ON MATCH + FOREACH guard below.
+MERGE_ROW = """
 MERGE (d:Dataset {id: $dataset_id})
-  ON CREATE SET d.filename = $filename, d.status = 'complete', d.rows_loaded = 1
-MERGE (r:DummyNode {dataset_id: $dataset_id})
-  ON CREATE SET r.loaded_at = timestamp()
+  ON CREATE SET d.filename = $filename, d.uploaded_at = $uploaded_at,
+                d.rows_total = $rows_total, d.rows_loaded = 0,
+                d.rows_failed = 0, d.status = 'loading'
+MERGE (r:Row {dataset_id: $dataset_id, row_index: $row_index})
+  ON CREATE SET r += $row, r._new = true
+  ON MATCH SET r._new = false
 MERGE (d)-[:HAS_ROW]->(r)
+WITH d, r
+FOREACH (_ IN CASE WHEN r._new THEN [1] ELSE [] END | SET d.rows_loaded = d.rows_loaded + 1)
+REMOVE r._new
+SET d.status = CASE WHEN d.rows_loaded + d.rows_failed >= d.rows_total THEN 'complete' ELSE 'loading' END
+"""
+
+# Same idempotency concern as above: a failing row_index must only count once per dataset_id even if the
+# same CSV (and thus the same failure) is re-published, so a FailedRow marker node gates the increment.
+MARK_FAILED = """
+MATCH (d:Dataset {id: $dataset_id})
+MERGE (f:FailedRow {dataset_id: $dataset_id, row_index: $row_index})
+  ON CREATE SET f._new = true
+  ON MATCH SET f._new = false
+WITH d, f
+FOREACH (_ IN CASE WHEN f._new THEN [1] ELSE [] END | SET d.rows_failed = coalesce(d.rows_failed, 0) + 1)
+REMOVE f._new
+SET d.status = CASE WHEN d.rows_loaded + d.rows_failed >= d.rows_total THEN 'complete' ELSE 'loading' END
 """
 
 
-def connect_kafka() -> KafkaConsumer:
-    """Connect to Kafka broker with retry loop until available."""
+def connect_kafka() -> Consumer:
+    consumer = Consumer({
+        "bootstrap.servers": KAFKA_BROKERS,
+        "group.id": "loader",
+        "auto.offset.reset": "earliest",
+        "enable.auto.commit": True,
+    })
     while True:
         try:
-            consumer = KafkaConsumer(
-                KAFKA_TOPIC,
-                bootstrap_servers=KAFKA_BROKERS,
-                group_id="dummy-loader-group",
-                auto_offset_reset="earliest",
-                enable_auto_commit=True,
-                value_deserializer=lambda v: json.loads(v.decode("utf-8")),
-            )
-            log.info("Successfully connected to Kafka at %s", KAFKA_BROKERS)
-            return consumer
-        except NoBrokersAvailable:
-            log.info("Kafka broker not ready yet, retrying in 2 seconds...")
+            consumer.list_topics(timeout=3)  # forces a broker round-trip; raises if not reachable yet
+            break
+        except KafkaException:
+            log.info("kafka not ready yet, retrying...")
             time.sleep(2)
         except Exception as e:
-            log.warning("Kafka connection error: %s, retrying in 2 seconds...", e)
+            log.warning("kafka error: %s, retrying...", e)
             time.sleep(2)
+    consumer.subscribe([KAFKA_TOPIC])
+    return consumer
 
 
 def connect_neo4j():
-    """Connect to Neo4j database with retry loop until reachable."""
     while True:
         try:
             driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
             driver.verify_connectivity()
-            log.info("Successfully connected to Neo4j at %s", NEO4J_URI)
             return driver
         except (ServiceUnavailable, AuthError, Exception) as e:
-            log.info("Neo4j not ready yet (%s), retrying in 2 seconds...", e)
+            log.info("neo4j not ready yet (%s), retrying...", e)
             time.sleep(2)
 
 
 def main():
-    log.info("Starting Phase 1 dummy loader...")
     consumer = connect_kafka()
     driver = connect_neo4j()
-    log.info("Dummy loader active and listening for messages on topic '%s'...", KAFKA_TOPIC)
+    log.info("loader started, consuming %s", KAFKA_TOPIC)
 
-    for message in consumer:
-        msg = message.value
-        dataset_id = msg.get("dataset_id", "dummy123")
-        filename = msg.get("filename", "dummy.csv")
-        log.info("Consumed dummy message from Kafka: %s", msg)
+    while True:
+        kmsg = consumer.poll(1.0)
+        if kmsg is None:
+            continue
+        if kmsg.error():
+            log.error("kafka consume error: %s", kmsg.error())
+            continue
 
+        msg = json.loads(kmsg.value().decode("utf-8"))
+        dataset_id = msg["dataset_id"]
+        row_index = msg["row_index"]
         try:
             with driver.session(database=NEO4J_DATABASE) as session:
                 session.run(
-                    MERGE_DUMMY_QUERY,
+                    MERGE_ROW,
                     dataset_id=dataset_id,
-                    filename=filename,
+                    filename=msg["filename"],
+                    uploaded_at=msg["uploaded_at"],
+                    row_index=row_index,
+                    rows_total=msg["rows_total"],
+                    row=msg["row"],
                 )
-            log.info("done")
+            log.info("loaded dataset=%s row_index=%s", dataset_id, row_index)
         except Exception as e:
-            log.error("Failed to MERGE dummy node into Neo4j: %s", e)
+            log.error("failed to load dataset=%s row_index=%s: %s", dataset_id, row_index, e)
+            try:
+                with driver.session(database=NEO4J_DATABASE) as session:
+                    session.run(MARK_FAILED, dataset_id=dataset_id, row_index=row_index)
+                log.info("marked failed row for dataset=%s row_index=%s", dataset_id, row_index)
+            except Exception as e2:
+                log.error("failed to mark row as failed: %s", e2)
 
 
 if __name__ == "__main__":
