@@ -1,1091 +1,646 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Data In, Answers Out — React Pipeline</title>
-
-  <!-- React 18 + ReactDOM + Babel (Loaded from local vendor with CDN fallback) -->
-  <script src="vendor/react.production.min.js"></script>
-  <script src="vendor/react-dom.production.min.js"></script>
-  <script src="vendor/babel.min.js"></script>
-  <script>
-    if (!window.React) {
-      document.write('<script src="https://unpkg.com/react@18/umd/react.production.min.js"><\/script>');
-      document.write('<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"><\/script>');
-      document.write('<script src="https://unpkg.com/@babel/standalone/babel.min.js"><\/script>');
-    }
-  </script>
-
-  <style>
-    :root {
-      --bg-primary: #0b0d11;
-      --bg-secondary: #131720;
-      --bg-card: #181c26;
-      --bg-card-hover: #1e2330;
-      --bg-input: #0e1118;
-      --border: #262b38;
-      --border-hover: #3b4255;
-      --border-active: #4f78e3;
-      --accent: #4f78e3;
-      --accent-hover: #3d64cc;
-      --accent-light: #24355a;
-      --text-primary: #f0f3f8;
-      --text-secondary: #949eb2;
-      --text-muted: #5e6678;
-      --success-bg: #102a1b;
-      --success-text: #5fe08f;
-      --success-border: #1d4d30;
-      --warning-bg: #2f2411;
-      --warning-text: #e6b258;
-      --warning-border: #564018;
-      --error-bg: #30171a;
-      --error-text: #f06a78;
-      --error-border: #5a272e;
-      --info-bg: #13243d;
-      --info-text: #6cb0f8;
-      --info-border: #203e6b;
-      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      --font-mono: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-    }
-
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    
-    body {
-      font-family: var(--font-sans);
-      background-color: var(--bg-primary);
-      color: var(--text-primary);
-      line-height: 1.5;
-      padding: 2rem 1rem;
-      min-height: 100vh;
-    }
-
-    .app-container {
-      max-width: 900px;
-      margin: 0 auto;
-    }
-
-    /* Header */
-    header {
-      margin-bottom: 2rem;
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      flex-wrap: wrap;
-      gap: 1rem;
-    }
-
-    .header-titles h1 {
-      font-size: 1.65rem;
-      font-weight: 700;
-      letter-spacing: -0.02em;
-      color: #fff;
-      display: flex;
-      align-items: center;
-      gap: 0.6rem;
-    }
-
-    .header-titles p {
-      color: var(--text-secondary);
-      font-size: 0.92rem;
-      margin-top: 0.35rem;
-    }
-
-    .health-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.35rem 0.85rem;
-      background: var(--bg-secondary);
-      border: 1px solid var(--border);
-      border-radius: 9999px;
-      font-size: 0.8rem;
-      font-weight: 500;
-      color: var(--text-secondary);
-    }
-
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--text-muted);
-    }
-    .status-dot.online {
-      background: var(--success-text);
-      box-shadow: 0 0 8px var(--success-text);
-    }
-    .status-dot.offline {
-      background: var(--error-text);
-      box-shadow: 0 0 8px var(--error-text);
-    }
-
-    /* Cards */
-    .card {
-      background: var(--bg-secondary);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 1.5rem;
-      margin-bottom: 1.5rem;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
-    }
-
-    .card-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 1.25rem;
-    }
-
-    .card-title {
-      font-size: 0.95rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: var(--text-secondary);
-      display: flex;
-      align-items: center;
-      gap: 0.6rem;
-    }
-
-    .step-number {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 22px;
-      height: 22px;
-      border-radius: 50%;
-      background: var(--accent);
-      color: #fff;
-      font-size: 0.75rem;
-      font-weight: 700;
-    }
-
-    /* Upload Area */
-    .dropzone {
-      border: 2px dashed var(--border);
-      border-radius: 10px;
-      padding: 2.25rem 1.5rem;
-      text-align: center;
-      cursor: pointer;
-      background: var(--bg-card);
-      transition: all 0.2s ease;
-    }
-
-    .dropzone:hover, .dropzone.active {
-      border-color: var(--accent);
-      background: var(--bg-card-hover);
-    }
-
-    .dropzone-icon {
-      font-size: 2rem;
-      margin-bottom: 0.75rem;
-      color: var(--text-secondary);
-    }
-
-    .dropzone-text {
-      color: var(--text-primary);
-      font-weight: 500;
-      font-size: 0.98rem;
-    }
-
-    .dropzone-hint {
-      color: var(--text-muted);
-      font-size: 0.82rem;
-      margin-top: 0.35rem;
-    }
-
-    .selected-file-banner {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      background: var(--accent-light);
-      border: 1px solid rgba(79, 120, 227, 0.4);
-      padding: 0.75rem 1rem;
-      border-radius: 8px;
-      margin-top: 1rem;
-    }
-
-    .file-details {
-      display: flex;
-      align-items: center;
-      gap: 0.6rem;
-      font-size: 0.9rem;
-    }
-
-    .file-name { font-weight: 600; color: #fff; }
-    .file-size { color: var(--text-secondary); font-size: 0.8rem; }
-
-    /* Buttons */
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 0.5rem;
-      background: var(--accent);
-      color: #fff;
-      border: none;
-      border-radius: 7px;
-      padding: 0.65rem 1.25rem;
-      font-size: 0.9rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: background 0.15s ease, opacity 0.15s ease;
-    }
-
-    .btn:hover:not(:disabled) { background: var(--accent-hover); }
-    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-    .btn-secondary {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      color: var(--text-secondary);
-    }
-    .btn-secondary:hover:not(:disabled) {
-      background: var(--bg-card-hover);
-      color: var(--text-primary);
-    }
-
-    .btn-sm { padding: 0.35rem 0.75rem; font-size: 0.8rem; }
-
-    /* Alert / Error Boxes */
-    .alert-box {
-      padding: 0.85rem 1.1rem;
-      border-radius: 8px;
-      font-size: 0.88rem;
-      margin-top: 1rem;
-      display: flex;
-      align-items: center;
-      gap: 0.6rem;
-    }
-
-    .alert-error {
-      background: var(--error-bg);
-      border: 1px solid var(--error-border);
-      color: var(--error-text);
-    }
-
-    .alert-info {
-      background: var(--info-bg);
-      border: 1px solid var(--info-border);
-      color: var(--info-text);
-    }
-
-    /* Meta Grid */
-    .meta-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-      gap: 1rem;
-      margin-top: 1.25rem;
-    }
-
-    .meta-card {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 0.9rem 1rem;
-    }
-
-    .meta-label {
-      font-size: 0.76rem;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      margin-bottom: 0.25rem;
-    }
-
-    .meta-value {
-      font-size: 1.15rem;
-      font-weight: 700;
-      color: #fff;
-      display: flex;
-      align-items: center;
-      gap: 0.4rem;
-    }
-
-    .meta-value.mono {
-      font-family: var(--font-mono);
-      font-size: 0.9rem;
-      word-break: break-all;
-    }
-
-    /* Status Badges */
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.35rem;
-      padding: 0.25rem 0.65rem;
-      border-radius: 9999px;
-      font-size: 0.75rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }
-
-    .badge-queued {
-      background: var(--warning-bg);
-      color: var(--warning-text);
-      border: 1px solid var(--warning-border);
-    }
-
-    .badge-loading {
-      background: var(--info-bg);
-      color: var(--info-text);
-      border: 1px solid var(--info-border);
-    }
-
-    .badge-complete {
-      background: var(--success-bg);
-      color: var(--success-text);
-      border: 1px solid var(--success-border);
-    }
-
-    .badge-failed {
-      background: var(--error-bg);
-      color: var(--error-text);
-      border: 1px solid var(--error-border);
-    }
-
-    .spinner {
-      width: 12px;
-      height: 12px;
-      border: 2px solid rgba(255, 255, 255, 0.2);
-      border-top-color: currentColor;
-      border-radius: 50%;
-      animation: spin 0.6s linear infinite;
-    }
-
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* Progress bar */
-    .progress-track {
-      width: 100%;
-      height: 8px;
-      background: var(--bg-card);
-      border-radius: 9999px;
-      overflow: hidden;
-      margin-top: 1rem;
-      border: 1px solid var(--border);
-    }
-
-    .progress-fill {
-      height: 100%;
-      background: linear-gradient(90deg, var(--accent), #5fe08f);
-      border-radius: 9999px;
-      transition: width 0.3s ease;
-    }
-
-    /* Table */
-    .table-container {
-      margin-top: 1rem;
-      overflow-x: auto;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      background: var(--bg-card);
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.84rem;
-    }
-
-    th, td {
-      padding: 0.65rem 0.9rem;
-      text-align: left;
-      border-bottom: 1px solid var(--border);
-      white-space: nowrap;
-    }
-
-    th {
-      background: #11141c;
-      color: var(--text-secondary);
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      font-size: 0.74rem;
-    }
-
-    tr:last-child td { border-bottom: none; }
-    tr:hover td { background: rgba(255, 255, 255, 0.02); }
-
-    /* Chips */
-    .suggestions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.5rem;
-      margin-bottom: 1rem;
-    }
-
-    .chip {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      color: var(--text-secondary);
-      padding: 0.35rem 0.75rem;
-      border-radius: 9999px;
-      font-size: 0.78rem;
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }
-
-    .chip:hover {
-      border-color: var(--accent);
-      color: #fff;
-      background: var(--bg-card-hover);
-    }
-
-    /* Chat input */
-    .chat-input-row {
-      display: flex;
-      gap: 0.6rem;
-      align-items: center;
-    }
-
-    .input-field {
-      flex: 1;
-      background: var(--bg-input);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 0.75rem 1rem;
-      color: #fff;
-      font-size: 0.92rem;
-      font-family: inherit;
-      transition: border-color 0.15s ease;
-    }
-
-    .input-field:focus {
-      outline: none;
-      border-color: var(--accent);
-    }
-
-    /* Chat Messages */
-    .chat-history {
-      display: flex;
-      flex-direction: column;
-      gap: 1.25rem;
-      margin-top: 1.5rem;
-    }
-
-    .chat-card {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 1.25rem;
-      transition: border-color 0.2s ease;
-    }
-
-    .chat-card.grounded { border-left: 4px solid var(--success-text); }
-    .chat-card.ungrounded { border-left: 4px solid var(--warning-text); }
-
-    .chat-q {
-      font-weight: 600;
-      color: var(--text-primary);
-      margin-bottom: 0.6rem;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-
-    .chat-a {
-      font-size: 0.96rem;
-      color: #fff;
-      line-height: 1.55;
-      margin-bottom: 0.75rem;
-    }
-
-    .grounded-tag {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.35rem;
-      font-size: 0.72rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      padding: 0.2rem 0.55rem;
-      border-radius: 9999px;
-      margin-bottom: 0.75rem;
-    }
-
-    .tag-grounded {
-      background: var(--success-bg);
-      color: var(--success-text);
-      border: 1px solid var(--success-border);
-    }
-
-    .tag-ungrounded {
-      background: var(--warning-bg);
-      color: var(--warning-text);
-      border: 1px solid var(--warning-border);
-    }
-
-    details {
-      margin-top: 0.5rem;
-      border-top: 1px solid var(--border);
-      padding-top: 0.75rem;
-    }
-
-    summary {
-      cursor: pointer;
-      color: var(--text-secondary);
-      font-size: 0.8rem;
-      user-select: none;
-    }
-
-    summary:hover { color: var(--text-primary); }
-
-    pre {
-      background: #090b0e;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 0.75rem;
-      font-family: var(--font-mono);
-      font-size: 0.8rem;
-      color: #9cdcfe;
-      overflow-x: auto;
-      margin-top: 0.5rem;
-      white-space: pre-wrap;
-      word-break: break-all;
-    }
-
-    pre.result-block {
-      color: #a8e0c0;
-      max-height: 200px;
-      overflow-y: auto;
-    }
-
-    .empty-placeholder {
-      text-align: center;
-      padding: 2.5rem 1rem;
-      color: var(--text-muted);
-      font-size: 0.88rem;
-    }
-
-    .copy-btn {
-      float: right;
-      background: transparent;
-      border: none;
-      color: var(--text-muted);
-      cursor: pointer;
-      font-size: 0.75rem;
-    }
-    .copy-btn:hover { color: #fff; }
-  </style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Data In, Answers Out</title>
+
+<!-- React 18 UMD builds + Babel standalone for in-browser JSX compilation -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin onerror="this.onerror=null;this.src='vendor/react.production.min.js'"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin onerror="this.onerror=null;this.src='vendor/react-dom.production.min.js'"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js" onerror="this.onerror=null;this.src='vendor/babel.min.js'"></script>
+<script>
+  // Robust fallback in case network blocks external unpkg and onerror didn't trigger
+  if (!window.React) {
+    document.write('<script src="vendor/react.production.min.js"><\/script>');
+    document.write('<script src="vendor/react-dom.production.min.js"><\/script>');
+    document.write('<script src="vendor/babel.min.js"><\/script>');
+  }
+</script>
+
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f1115;
+    color: #e6e6e6;
+    margin: 0;
+    padding: 2rem;
+    line-height: 1.5;
+  }
+  .container { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+  .subtitle { color: #9aa0a6; margin-bottom: 2rem; font-size: 0.9rem; }
+  .card {
+    background: #1a1d24;
+    border: 1px solid #2a2e37;
+    border-radius: 10px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+  .card h2 {
+    font-size: 1rem;
+    margin: 0 0 1rem 0;
+    color: #c8cbd0;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  /* Upload zone */
+  .dropzone {
+    border: 2px dashed #3a3f4b;
+    border-radius: 8px;
+    padding: 2rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .dropzone:hover, .dropzone.dragover {
+    border-color: #5b8def;
+    background: #161a22;
+  }
+  .dropzone input { display: none; }
+  .dropzone p { margin: 0; color: #9aa0a6; }
+  .dropzone .filename { color: #e6e6e6; font-weight: 600; margin-top: 0.5rem; }
+
+  .error-box {
+    background: #3a1f1f;
+    border: 1px solid #7a3a3a;
+    color: #ffb3b3;
+    padding: 0.75rem 1rem;
+    border-radius: 6px;
+    margin-top: 1rem;
+    font-size: 0.9rem;
+  }
+
+  /* Ingest result */
+  .meta-row {
+    display: flex;
+    gap: 1.5rem;
+    margin-top: 1rem;
+    flex-wrap: wrap;
+  }
+  .meta-item { font-size: 0.85rem; color: #9aa0a6; }
+  .meta-item strong { color: #e6e6e6; display: block; font-size: 1rem; }
+
+  /* Status badges */
+  .status-badge {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .status-queued { background: #3a3520; color: #e0c96b; }
+  .status-loading { background: #1f3550; color: #7db4f0; }
+  .status-complete { background: #1f3d28; color: #6bd68a; }
+  .status-failed { background: #3a1f1f; color: #ff8080; }
+
+  .spinner {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid #3a3f4b;
+    border-top-color: #7db4f0;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Stretch Goal #1: Live Progress Bar */
+  .progress-wrap {
+    margin-top: 1rem;
+  }
+  .progress-bar-bg {
+    width: 100%;
+    height: 8px;
+    background: #12151b;
+    border: 1px solid #2a2e37;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .progress-bar-fill {
+    height: 100%;
+    background: #5b8def;
+    transition: width 0.3s ease;
+  }
+  .progress-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    color: #9aa0a6;
+    margin-top: 0.35rem;
+  }
+
+  /* Stretch Goal #4: Failed count visual distinction */
+  .failed-badge {
+    color: #ff8080 !important;
+    font-weight: 700;
+  }
+
+  /* Stretch Goal #3: Reset Button */
+  .btn-reset {
+    background: transparent;
+    border: 1px solid #3a3f4b;
+    color: #9aa0a6;
+    padding: 0.25rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+  .btn-reset:hover {
+    background: #2a2e37;
+    color: #fff;
+  }
+
+  /* Preview table */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 1rem;
+    font-size: 0.85rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid #2a2e37;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
+  }
+  th { color: #9aa0a6; font-weight: 600; }
+  .table-wrap { overflow-x: auto; }
+
+  /* Stretch Goal #2: Example prompt chips */
+  .example-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+  }
+  .chip {
+    background: #12151b;
+    border: 1px solid #2a2e37;
+    color: #9aa0a6;
+    padding: 0.3rem 0.65rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .chip:hover {
+    border-color: #5b8def;
+    color: #e6e6e6;
+    background: #1a1e28;
+  }
+
+  /* Chat */
+  .chat-input-row { display: flex; gap: 0.5rem; }
+  input[type="text"] {
+    flex: 1;
+    background: #12151b;
+    border: 1px solid #2a2e37;
+    color: #e6e6e6;
+    padding: 0.6rem 0.8rem;
+    border-radius: 6px;
+    font-size: 0.9rem;
+  }
+  input[type="text"]:focus { outline: none; border-color: #5b8def; }
+  button.action-btn {
+    background: #5b8def;
+    color: white;
+    border: none;
+    padding: 0.6rem 1.2rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+  button.action-btn:hover { background: #4a7bd9; }
+  button.action-btn:disabled { background: #3a3f4b; cursor: not-allowed; }
+
+  .chat-answer {
+    margin-top: 1rem;
+    padding: 1rem;
+    background: #12151b;
+    border-radius: 8px;
+    border-left: 3px solid #5b8def;
+  }
+  .chat-answer.ungrounded { border-left-color: #e0a03a; }
+  .chat-answer-text { font-size: 1rem; margin-bottom: 0.5rem; }
+
+  .grounded-badge {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    margin-bottom: 0.75rem;
+  }
+  .grounded-true { background: #1f3d28; color: #6bd68a; }
+  .grounded-false { background: #3a2f1f; color: #e0a03a; }
+
+  details {
+    margin-top: 0.5rem;
+    font-size: 0.8rem;
+  }
+  summary {
+    cursor: pointer;
+    color: #9aa0a6;
+    margin-bottom: 0.5rem;
+  }
+  pre {
+    background: #0a0c10;
+    border: 1px solid #2a2e37;
+    border-radius: 6px;
+    padding: 0.75rem;
+    overflow-x: auto;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+    color: #a8e0c0;
+    margin: 0.25rem 0;
+  }
+
+  .empty-state { color: #6b6f78; font-size: 0.85rem; font-style: italic; }
+</style>
 </head>
 <body>
-  <div id="root"></div>
+<div id="root"></div>
 
-  <script type="text/babel">
-    const { useState, useEffect, useRef, useMemo, useCallback } = React;
+<script type="text/babel">
+  const { useState, useEffect, useRef } = React;
+  const API_BASE = "http://localhost:8000";
 
-    const API_BASE = "http://localhost:8000";
+  function App() {
+    // 1. Upload state
+    const [fileName, setFileName] = useState("");
+    const [isDragOver, setIsDragOver] = useState(false);
+    const [uploadError, setUploadError] = useState("");
+    const [jobMeta, setJobMeta] = useState(null); // { job_id, rows_received, status }
+    const fileInputRef = useRef(null);
 
-    function App() {
-      // System health
-      const [health, setHealth] = useState({ online: false, kafka: false, neo4j: false });
-      
-      // Upload & Preview state
-      const [file, setFile] = useState(null);
-      const [previewRows, setPreviewRows] = useState([]);
-      const [previewHeaders, setPreviewHeaders] = useState([]);
-      const [uploading, setUploading] = useState(false);
-      const [uploadError, setUploadError] = useState(null);
-      
-      // Active Job & Status
-      const [jobId, setJobId] = useState(null);
-      const [jobData, setJobData] = useState(null);
-      const [isPolling, setIsPolling] = useState(false);
-      
-      // Chat state
-      const [question, setQuestion] = useState("");
-      const [chatHistory, setChatHistory] = useState([]);
-      const [asking, setAsking] = useState(false);
-      const [chatError, setChatError] = useState(null);
+    // 2. Preview & Status state
+    const [previewRows, setPreviewRows] = useState([]);
+    const [previewHeaders, setPreviewHeaders] = useState([]);
+    const [previewTotalRows, setPreviewTotalRows] = useState(0);
+    const [statusData, setStatusData] = useState(null);
+    const [statusError, setStatusError] = useState("");
+    const [isPolling, setIsPolling] = useState(false);
 
-      // 1. Health check poll
-      useEffect(() => {
-        const checkHealth = async () => {
-          try {
-            const res = await fetch(`${API_BASE}/health`);
-            if (res.ok) {
-              const data = await res.json();
-              setHealth({
-                online: true,
-                kafka: !!data.kafka_connected,
-                neo4j: !!data.neo4j_connected
-              });
-            } else {
-              setHealth({ online: false, kafka: false, neo4j: false });
-            }
-          } catch (e) {
-            setHealth({ online: false, kafka: false, neo4j: false });
-          }
-        };
-        checkHealth();
-        const interval = setInterval(checkHealth, 5000);
-        return () => clearInterval(interval);
-      }, []);
+    // 3. Chat state
+    const [question, setQuestion] = useState("");
+    const [isAsking, setIsAsking] = useState(false);
+    const [chatError, setChatError] = useState("");
+    const [chatResult, setChatResult] = useState(null);
 
-      // 2. Client-side CSV preview parse
-      const handleFileSelected = (selectedFile) => {
-        setUploadError(null);
-        if (!selectedFile) return;
-        if (!selectedFile.name.endsWith(".csv") && selectedFile.type !== "text/csv") {
-          setUploadError("Please choose a valid .csv file.");
-          return;
+    // File selection & upload logic (Identical to vanilla logic)
+    const handleFile = async (file) => {
+      if (!file) return;
+      setUploadError("");
+      setFileName(file.name);
+
+      // Client-side preview parse (first 10 rows)
+      try {
+        const text = await file.text();
+        const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
+        if (lines.length > 0) {
+          const header = lines[0].split(",");
+          const rows = lines.slice(1, 11).map(l => l.split(","));
+          setPreviewHeaders(header);
+          setPreviewRows(rows);
+          setPreviewTotalRows(lines.length - 1);
+        } else {
+          setPreviewHeaders([]);
+          setPreviewRows([]);
+          setPreviewTotalRows(0);
         }
+      } catch (err) {
+        console.error("Preview parse failed:", err);
+      }
 
-        setFile(selectedFile);
+      // Upload to API
+      const formData = new FormData();
+      formData.append("file", file);
 
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          const text = e.target.result;
-          const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
-          if (lines.length > 0) {
-            const headers = lines[0].split(",").map(h => h.trim().replace(/^["']|["']$/g, ""));
-            const rows = lines.slice(1, 11).map(line => {
-              return line.split(",").map(c => c.trim().replace(/^["']|["']$/g, ""));
-            });
-            setPreviewHeaders(headers);
-            setPreviewRows(rows);
-          } else {
-            setPreviewHeaders([]);
-            setPreviewRows([]);
-          }
-        };
-        reader.readAsText(selectedFile);
-      };
+      try {
+        const res = await fetch(`${API_BASE}/ingest`, {
+          method: "POST",
+          body: formData,
+        });
+        if (!res.ok) {
+          const body = await res.text();
+          throw new Error(`Server returned ${res.status}: ${body}`);
+        }
+        const data = await res.json();
+        setJobMeta(data);
+        setStatusData({
+          status: data.status || "queued",
+          rows_total: data.rows_received,
+          rows_loaded: 0,
+          rows_failed: 0,
+        });
+        setIsPolling(true);
+      } catch (err) {
+        setUploadError(`Upload failed: ${err.message}. Is the API running at ${API_BASE}?`);
+        console.error(err);
+      }
+    };
 
-      // 3. Ingest Upload
-      const handleUpload = async () => {
-        if (!file) return;
-        setUploading(true);
-        setUploadError(null);
+    // Status polling effect: polls /status?job_id=... every 1.5s until complete or failed
+    useEffect(() => {
+      if (!isPolling || !jobMeta?.job_id) return;
 
-        const formData = new FormData();
-        formData.append("file", file);
-
+      const fetchStatus = async () => {
         try {
-          const res = await fetch(`${API_BASE}/ingest`, {
-            method: "POST",
-            body: formData,
-          });
+          const res = await fetch(`${API_BASE}/status?job_id=${encodeURIComponent(jobMeta.job_id)}`);
           if (!res.ok) {
-            const errText = await res.text();
-            throw new Error(`Upload failed (${res.status}): ${errText}`);
+            setStatusError(`Could not fetch status (${res.status}).`);
+            setIsPolling(false);
+            return;
           }
           const data = await res.json();
-          setJobId(data.job_id);
-          setJobData({
-            job_id: data.job_id,
-            rows_total: data.rows_received,
-            rows_loaded: 0,
-            rows_failed: 0,
-            status: data.status || "queued"
-          });
-          setIsPolling(true);
+          setStatusData(data);
+
+          if (data.status === "complete" || data.status === "failed") {
+            setIsPolling(false);
+          }
         } catch (err) {
-          setUploadError(err.message || "Failed to upload CSV");
-        } finally {
-          setUploading(false);
+          setStatusError(err.message);
+          setIsPolling(false);
+          console.error(err);
         }
       };
 
-      // 4. Status Polling
-      useEffect(() => {
-        if (!isPolling || !jobId) return;
+      fetchStatus(); // immediate first check
+      const timer = setInterval(fetchStatus, 1500);
+      return () => clearInterval(timer);
+    }, [isPolling, jobMeta?.job_id]);
 
-        const pollStatus = async () => {
-          try {
-            const res = await fetch(`${API_BASE}/status?job_id=${encodeURIComponent(jobId)}`);
-            if (!res.ok) return;
-            const data = await res.json();
-            setJobData(data);
+    // Chat submit logic (Identical to vanilla logic)
+    const handleAsk = async (qText) => {
+      const q = (qText !== undefined ? qText : question).trim();
+      if (!q || isAsking) return;
 
-            if (data.status === "complete" || data.status === "failed") {
-              setIsPolling(false);
-            }
-          } catch (err) {
-            console.error("Status check failed:", err);
-          }
-        };
+      setChatError("");
+      setIsAsking(true);
 
-        pollStatus();
-        const timer = setInterval(pollStatus, 1500);
-        return () => clearInterval(timer);
-      }, [isPolling, jobId]);
-
-      // 5. Ask Question
-      const handleAsk = async (qToAsk) => {
-        const query = (qToAsk || question).trim();
-        if (!query || asking) return;
-
-        setAsking(true);
-        setChatError(null);
-
-        try {
-          const res = await fetch(`${API_BASE}/chat`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ question: query }),
-          });
-
-          if (!res.ok) {
-            const errText = await res.text();
-            throw new Error(`Chat request failed (${res.status}): ${errText}`);
-          }
-
-          const answerData = await res.json();
-          setChatHistory(prev => [
-            {
-              id: Date.now(),
-              question: query,
-              answer: answerData.answer,
-              cypher: answerData.cypher,
-              result: answerData.result,
-              grounded: !!answerData.grounded,
-              time: new Date().toLocaleTimeString()
-            },
-            ...prev
-          ]);
-          setQuestion("");
-        } catch (err) {
-          setChatError(err.message || "Failed to answer question");
-        } finally {
-          setAsking(false);
+      try {
+        const res = await fetch(`${API_BASE}/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: q }),
+        });
+        if (!res.ok) {
+          const body = await res.text();
+          throw new Error(`Server returned ${res.status}: ${body}`);
         }
-      };
+        const data = await res.json();
+        setChatResult(data);
+      } catch (err) {
+        setChatError(`Chat failed: ${err.message}`);
+        console.error(err);
+      } finally {
+        setIsAsking(false);
+      }
+    };
 
-      // Example prompts
-      const exampleChips = [
-        "How many rows in total?",
-        "What columns are in this dataset?",
-        "Show the first 5 rows",
-        "How many rows belong to Billing?",
-        "What is the total amount?"
-      ];
+    // Stretch Goal #3: Reset all state without full page reload
+    const handleReset = () => {
+      setFileName("");
+      setUploadError("");
+      setJobMeta(null);
+      setPreviewRows([]);
+      setPreviewHeaders([]);
+      setPreviewTotalRows(0);
+      setStatusData(null);
+      setStatusError("");
+      setIsPolling(false);
+      setQuestion("");
+      setChatError("");
+      setChatResult(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    };
 
-      // Format file size
-      const formatSize = (bytes) => {
-        if (!bytes) return "";
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
-        return (bytes / 1048576).toFixed(1) + " MB";
-      };
+    // Calculate progress percentage for Stretch Goal #1
+    const progressPct = statusData && statusData.rows_total > 0
+      ? Math.min(100, Math.round(((statusData.rows_loaded || 0) / statusData.rows_total) * 100))
+      : 0;
 
-      const progressPercent = useMemo(() => {
-        if (!jobData || !jobData.rows_total || jobData.rows_total === 0) return 0;
-        const pct = Math.round(((jobData.rows_loaded || 0) / jobData.rows_total) * 100);
-        return Math.min(100, Math.max(0, pct));
-      }, [jobData]);
+    return (
+      <div className="container">
+        <h1>Data In, Answers Out</h1>
+        <p className="subtitle">Upload a CSV, watch it load into the graph, then ask questions about it.</p>
 
-      return (
-        <div className="app-container">
-          {/* Header */}
-          <header>
-            <div className="header-titles">
-              <h1>
-                <span>⚡</span> Data In, Answers Out
-              </h1>
-              <p>Upload a CSV, publish to Kafka, stream into Neo4j graph, and ask grounded questions.</p>
+        {/* 1. Upload Card */}
+        <div className="card">
+          <h2>
+            <span>1. Upload CSV</span>
+            {jobMeta && (
+              <button className="btn-reset" onClick={handleReset} title="Reset all state without refreshing">
+                Reset / New Upload
+              </button>
+            )}
+          </h2>
+          <div
+            className={`dropzone ${isDragOver ? "dragover" : ""}`}
+            id="dropzone"
+            onClick={() => fileInputRef.current && fileInputRef.current.click()}
+            onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+            onDragLeave={() => setIsDragOver(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setIsDragOver(false);
+              if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+            }}
+          >
+            <input
+              type="file"
+              id="fileInput"
+              ref={fileInputRef}
+              accept=".csv"
+              onChange={(e) => {
+                if (e.target.files.length) handleFile(e.target.files[0]);
+              }}
+            />
+            <p id="dropzoneText">{fileName ? "File selected" : "Drag a CSV here, or click to browse"}</p>
+            {fileName && <div className="filename" id="filename">{fileName}</div>}
+          </div>
+
+          {uploadError && <div className="error-box" id="uploadError">{uploadError}</div>}
+
+          {jobMeta && (
+            <div className="meta-row" id="ingestMeta">
+              <div className="meta-item">Job ID<strong id="metaJobId">{jobMeta.job_id ?? "—"}</strong></div>
+              <div className="meta-item">Rows received<strong id="metaRowsReceived">{jobMeta.rows_received ?? "—"}</strong></div>
+              <div className="meta-item">Status<strong id="metaStatus">{jobMeta.status ?? "—"}</strong></div>
             </div>
-            <div className="health-badge" title="Service health (API, Kafka, Neo4j)">
-              <span className={`status-dot ${health.online ? "online" : "offline"}`} />
-              <span>
-                {health.online
-                  ? `Stack Ready (${health.kafka ? "Kafka ✓" : "Kafka ✗"}, ${health.neo4j ? "Neo4j ✓" : "Neo4j ✗"})`
-                  : "API Offline"}
-              </span>
-            </div>
-          </header>
+          )}
+        </div>
 
-          {/* Step 1: Upload */}
-          <section className="card">
-            <div className="card-header">
-              <div className="card-title">
-                <span className="step-number">1</span> Upload CSV Dataset
+        {/* 2. Preview + status card */}
+        <div className="card">
+          <h2>2. Preview &amp; Load Status</h2>
+          <div id="statusPanel">
+            {!statusData && !statusError && (
+              <div className="empty-state">No file uploaded yet.</div>
+            )}
+            {statusError && (
+              <div>
+                <span className="status-badge status-failed">error</span> {statusError}
               </div>
-            </div>
-
-            <DropZone onFileDrop={handleFileSelected} />
-
-            {file && (
-              <div className="selected-file-banner">
-                <div className="file-details">
-                  <span>📄</span>
-                  <div>
-                    <div className="file-name">{file.name}</div>
-                    <div className="file-size">{formatSize(file.size)}</div>
+            )}
+            {statusData && (
+              <div>
+                {(statusData.status === "queued" || statusData.status === "loading") && (
+                  <span className="spinner"></span>
+                )}
+                <span className={`status-badge status-${statusData.status || "unknown"}`}>
+                  {statusData.status || "unknown"}
+                </span>
+                <div className="meta-row">
+                  <div className="meta-item">Total<strong>{statusData.rows_total ?? "—"}</strong></div>
+                  <div className="meta-item">Loaded<strong>{statusData.rows_loaded ?? "—"}</strong></div>
+                  <div className="meta-item">
+                    Failed
+                    <strong className={statusData.rows_failed > 0 ? "failed-badge" : ""}>
+                      {statusData.rows_failed ?? "—"}
+                    </strong>
                   </div>
                 </div>
-                <div style={{ display: "flex", gap: "0.5rem" }}>
-                  <button
-                    className="btn btn-sm"
-                    onClick={handleUpload}
-                    disabled={uploading}
-                  >
-                    {uploading ? (
-                      <>
-                        <span className="spinner" /> Uploading & Ingesting…
-                      </>
-                    ) : (
-                      "Ingest to Kafka →"
-                    )}
-                  </button>
-                  <button
-                    className="btn btn-secondary btn-sm"
-                    onClick={() => { setFile(null); setPreviewHeaders([]); setPreviewRows([]); }}
-                    disabled={uploading}
-                  >
-                    Clear
-                  </button>
+
+                {/* Stretch Goal #1: Live Progress Bar */}
+                <div className="progress-wrap">
+                  <div className="progress-bar-bg">
+                    <div className="progress-bar-fill" style={{ width: `${progressPct}%` }}></div>
+                  </div>
+                  <div className="progress-label">
+                    <span>Ingest Progress</span>
+                    <span>{progressPct}% ({statusData.rows_loaded ?? 0} / {statusData.rows_total ?? 0})</span>
+                  </div>
                 </div>
               </div>
             )}
+          </div>
 
-            {uploadError && (
-              <div className="alert-box alert-error">
-                <span>⚠️</span> {uploadError}
-              </div>
-            )}
-
+          <div className="table-wrap" id="previewTableWrap">
             {previewHeaders.length > 0 && (
-              <div style={{ marginTop: "1.25rem" }}>
-                <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginBottom: "0.4rem" }}>
-                  CSV Quick Preview (First 10 rows):
-                </div>
-                <div className="table-container">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>#</th>
-                        {previewHeaders.map((h, i) => (
-                          <th key={i}>{h}</th>
+              <>
+                <table>
+                  <thead>
+                    <tr>
+                      {previewHeaders.map((h, i) => (
+                        <th key={i}>{h.trim()}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {previewRows.map((r, rIdx) => (
+                      <tr key={rIdx}>
+                        {r.map((cell, cIdx) => (
+                          <td key={cIdx}>{(cell || "").trim()}</td>
                         ))}
                       </tr>
-                    </thead>
-                    <tbody>
-                      {previewRows.map((row, rIdx) => (
-                        <tr key={rIdx}>
-                          <td style={{ color: "var(--text-muted)" }}>{rIdx + 1}</td>
-                          {row.map((val, cIdx) => (
-                            <td key={cIdx}>{val}</td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-          </section>
-
-          {/* Step 2: Ingest & Status */}
-          <section className="card">
-            <div className="card-header">
-              <div className="card-title">
-                <span className="step-number">2</span> Pipeline &amp; Graph Load Status
-              </div>
-              {jobData && (
-                <span className={`badge badge-${jobData.status || "queued"}`}>
-                  {(jobData.status === "queued" || jobData.status === "loading") && (
-                    <span className="spinner" />
-                  )}
-                  {jobData.status || "Unknown"}
-                </span>
-              )}
-            </div>
-
-            {!jobData ? (
-              <div className="empty-placeholder">
-                No CSV uploaded yet. Select and ingest a file above to view live progress.
-              </div>
-            ) : (
-              <div>
-                <div className="meta-grid">
-                  <div className="meta-card">
-                    <div className="meta-label">Job ID</div>
-                    <div className="meta-value mono" title={jobData.job_id || jobId}>
-                      {(jobData.job_id || jobId || "—").substring(0, 8)}…
-                    </div>
+                    ))}
+                  </tbody>
+                </table>
+                {previewTotalRows > 10 && (
+                  <div className="empty-state" style={{ marginTop: "0.5rem" }}>
+                    Showing first 10 of {previewTotalRows} rows (preview only — server parses the full file).
                   </div>
-                  <div className="meta-card">
-                    <div className="meta-label">Total Rows</div>
-                    <div className="meta-value">{jobData.rows_total ?? "—"}</div>
-                  </div>
-                  <div className="meta-card">
-                    <div className="meta-label">Loaded in Neo4j</div>
-                    <div className="meta-value" style={{ color: "var(--success-text)" }}>
-                      {jobData.rows_loaded ?? 0}
-                    </div>
-                  </div>
-                  <div className="meta-card">
-                    <div className="meta-label">Failed Rows</div>
-                    <div className="meta-value" style={{ color: jobData.rows_failed > 0 ? "var(--error-text)" : "inherit" }}>
-                      {jobData.rows_failed ?? 0}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="progress-track">
-                  <div className="progress-fill" style={{ width: `${progressPercent}%` }} />
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78rem", color: "var(--text-muted)", marginTop: "0.35rem" }}>
-                  <span>Progress</span>
-                  <span>{progressPercent}% loaded</span>
-                </div>
-              </div>
-            )}
-          </section>
-
-          {/* Step 3: Chat */}
-          <section className="card">
-            <div className="card-header">
-              <div className="card-title">
-                <span className="step-number">3</span> Ask Your Graph Data
-              </div>
-            </div>
-
-            <div className="suggestions">
-              {exampleChips.map((chip, i) => (
-                <button
-                  key={i}
-                  className="chip"
-                  onClick={() => { setQuestion(chip); handleAsk(chip); }}
-                  disabled={asking}
-                >
-                  {chip}
-                </button>
-              ))}
-            </div>
-
-            <div className="chat-input-row">
-              <input
-                type="text"
-                className="input-field"
-                placeholder="Ask in natural language (e.g. 'How many rows belong to Billing?')..."
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") handleAsk(); }}
-                disabled={asking}
-              />
-              <button
-                className="btn"
-                onClick={() => handleAsk()}
-                disabled={asking || !question.trim()}
-              >
-                {asking ? (
-                  <>
-                    <span className="spinner" /> Querying…
-                  </>
-                ) : (
-                  "Ask →"
                 )}
-              </button>
-            </div>
+              </>
+            )}
+          </div>
+        </div>
 
-            {chatError && (
-              <div className="alert-box alert-error">
-                <span>⚠️</span> {chatError}
+        {/* 3. Chat card */}
+        <div className="card">
+          <h2>3. Ask Your Data</h2>
+
+          {/* Stretch Goal #2: Example question suggestion chips */}
+          <div className="example-chips">
+            <span style={{ fontSize: "0.75rem", color: "#6b6f78", alignSelf: "center", marginRight: "0.25rem" }}>
+              Quick prompts:
+            </span>
+            {[
+              "How many rows in total?",
+              "What columns exist in this dataset?",
+              "Show top 5 by amount",
+              "How many rows belong to Billing?"
+            ].map((chipText, i) => (
+              <button
+                key={i}
+                type="button"
+                className="chip"
+                onClick={() => {
+                  setQuestion(chipText);
+                  handleAsk(chipText);
+                }}
+                disabled={isAsking}
+              >
+                {chipText}
+              </button>
+            ))}
+          </div>
+
+          <div className="chat-input-row">
+            <input
+              type="text"
+              id="chatInput"
+              placeholder="How many rows belong to Billing?"
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleAsk();
+              }}
+              disabled={isAsking}
+            />
+            <button
+              id="chatBtn"
+              className="action-btn"
+              onClick={() => handleAsk()}
+              disabled={isAsking || !question.trim()}
+            >
+              {isAsking ? "Asking…" : "Ask"}
+            </button>
+          </div>
+
+          {chatError && <div id="chatError" className="error-box">{chatError}</div>}
+
+          <div id="chatResult">
+            {chatResult && (
+              <div className={`chat-answer ${chatResult.grounded ? "" : "ungrounded"}`}>
+                <span className={`grounded-badge ${chatResult.grounded ? "grounded-true" : "grounded-false"}`}>
+                  {chatResult.grounded ? "Grounded" : "Not grounded"}
+                </span>
+                <div className="chat-answer-text">
+                  {chatResult.answer || "(no answer returned)"}
+                </div>
+                <details>
+                  <summary>Show Cypher &amp; raw result</summary>
+                  <pre>{chatResult.cypher || "(no cypher returned)"}</pre>
+                  <pre>{JSON.stringify(chatResult.result ?? [], null, 2)}</pre>
+                </details>
               </div>
             )}
-
-            {/* Chat results */}
-            <div className="chat-history">
-              {chatHistory.map((item) => (
-                <div
-                  key={item.id}
-                  className={`chat-card ${item.grounded ? "grounded" : "ungrounded"}`}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                    <div className="chat-q">
-                      <span>💬</span> {item.question}
-                    </div>
-                    <span className={`grounded-tag ${item.grounded ? "tag-grounded" : "tag-ungrounded"}`}>
-                      {item.grounded ? "✓ Grounded" : "⚠️ Ungrounded"}
-                    </span>
-                  </div>
-
-                  <div className="chat-a">{item.answer}</div>
-
-                  <details>
-                    <summary>Show Cypher Query &amp; Execution Details</summary>
-                    <div>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "0.5rem" }}>
-                        <span style={{ fontSize: "0.72rem", color: "var(--text-muted)", textTransform: "uppercase" }}>Generated Cypher:</span>
-                        <button
-                          className="copy-btn"
-                          onClick={() => navigator.clipboard.writeText(item.cypher || "")}
-                        >
-                          Copy
-                        </button>
-                      </div>
-                      <pre>{item.cypher || "(No query executed)"}</pre>
-
-                      <div style={{ fontSize: "0.72rem", color: "var(--text-muted)", textTransform: "uppercase", marginTop: "0.6rem" }}>
-                        Raw Result Set ({Array.isArray(item.result) ? item.result.length : 0} items):
-                      </div>
-                      <pre className="result-block">
-                        {JSON.stringify(item.result ?? [], null, 2)}
-                      </pre>
-                    </div>
-                  </details>
-                </div>
-              ))}
-            </div>
-          </section>
+          </div>
         </div>
-      );
-    }
+      </div>
+    );
+  }
 
-    // Drag and drop helper component
-    function DropZone({ onFileDrop }) {
-      const [isDragging, setIsDragging] = useState(false);
-      const fileInputRef = useRef(null);
-
-      const handleDragOver = (e) => {
-        e.preventDefault();
-        setIsDragging(true);
-      };
-
-      const handleDragLeave = () => {
-        setIsDragging(false);
-      };
-
-      const handleDrop = (e) => {
-        e.preventDefault();
-        setIsDragging(false);
-        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-          onFileDrop(e.dataTransfer.files[0]);
-        }
-      };
-
-      return (
-        <div
-          className={`dropzone ${isDragging ? "active" : ""}`}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          onClick={() => fileInputRef.current && fileInputRef.current.click()}
-        >
-          <input
-            type="file"
-            ref={fileInputRef}
-            accept=".csv"
-            style={{ display: "none" }}
-            onChange={(e) => {
-              if (e.target.files && e.target.files.length > 0) {
-                onFileDrop(e.target.files[0]);
-              }
-            }}
-          />
-          <div className="dropzone-icon">📁</div>
-          <div className="dropzone-text">Drag &amp; drop your CSV here, or click to browse</div>
-          <div className="dropzone-hint">Supports comma-separated files (.csv)</div>
-        </div>
-      );
-    }
-
-    // Mount the React Application
-    const root = ReactDOM.createRoot(document.getElementById("root"));
-    root.render(<App />);
-  </script>
+  // Mount React Root
+  const root = ReactDOM.createRoot(document.getElementById("root"));
+  root.render(<App />);
+</script>
 </body>
 </html>
