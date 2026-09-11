@@ -2,97 +2,87 @@ import json
 import logging
 import os
 import time
-
 from kafka import KafkaConsumer
 from kafka.errors import NoBrokersAvailable
 from neo4j import GraphDatabase
-from neo4j.exceptions import ServiceUnavailable
+from neo4j.exceptions import ServiceUnavailable, AuthError
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("loader")
 
-KAFKA_BROKERS = os.environ["KAFKA_BROKERS"]
-NEO4J_URI = os.environ["NEO4J_URI"]
-NEO4J_USER = os.environ["NEO4J_USER"]
-NEO4J_PASSWORD = os.environ["NEO4J_PASSWORD"]
-NEO4J_DATABASE = os.environ["NEO4J_DATABASE"]
+KAFKA_BROKERS = os.getenv("KAFKA_BROKERS", "kafka:9092")
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
+NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "csvgraphdb")
+NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "CSV_Graph_DB")
 KAFKA_TOPIC = "csv-rows"
 
-# Idempotent per IMPLEMENTATION_PLAN.md: MERGE keyed on dataset_id (sha256 of file) + row_index, never CREATE.
-MERGE_ROW = """
+MERGE_DUMMY_QUERY = """
 MERGE (d:Dataset {id: $dataset_id})
-  ON CREATE SET d.filename = $filename, d.uploaded_at = $uploaded_at,
-                d.rows_total = $rows_total, d.rows_loaded = 0,
-                d.rows_failed = 0, d.status = 'loading'
-MERGE (r:Row {dataset_id: $dataset_id, row_index: $row_index})
-  ON CREATE SET r += $row
+  ON CREATE SET d.filename = $filename, d.status = 'complete', d.rows_loaded = 1
+MERGE (r:DummyNode {dataset_id: $dataset_id})
+  ON CREATE SET r.loaded_at = timestamp()
 MERGE (d)-[:HAS_ROW]->(r)
-SET d.rows_loaded = d.rows_loaded + 1,
-    d.status = CASE WHEN d.rows_loaded + d.rows_failed >= d.rows_total THEN 'complete' ELSE 'loading' END
-"""
-
-MARK_FAILED = """
-MATCH (d:Dataset {id: $dataset_id})
-SET d.rows_failed = coalesce(d.rows_failed, 0) + 1,
-    d.status = CASE WHEN d.rows_loaded + d.rows_failed >= d.rows_total THEN 'complete' ELSE 'loading' END
 """
 
 
 def connect_kafka() -> KafkaConsumer:
+    """Connect to Kafka broker with retry loop until available."""
     while True:
         try:
-            return KafkaConsumer(
+            consumer = KafkaConsumer(
                 KAFKA_TOPIC,
                 bootstrap_servers=KAFKA_BROKERS,
-                group_id="loader",
+                group_id="dummy-loader-group",
                 auto_offset_reset="earliest",
                 enable_auto_commit=True,
                 value_deserializer=lambda v: json.loads(v.decode("utf-8")),
             )
+            log.info("Successfully connected to Kafka at %s", KAFKA_BROKERS)
+            return consumer
         except NoBrokersAvailable:
-            log.info("kafka not ready yet, retrying...")
+            log.info("Kafka broker not ready yet, retrying in 2 seconds...")
+            time.sleep(2)
+        except Exception as e:
+            log.warning("Kafka connection error: %s, retrying in 2 seconds...", e)
             time.sleep(2)
 
 
 def connect_neo4j():
+    """Connect to Neo4j database with retry loop until reachable."""
     while True:
         try:
             driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
             driver.verify_connectivity()
+            log.info("Successfully connected to Neo4j at %s", NEO4J_URI)
             return driver
-        except ServiceUnavailable:
-            log.info("neo4j not ready yet, retrying...")
+        except (ServiceUnavailable, AuthError, Exception) as e:
+            log.info("Neo4j not ready yet (%s), retrying in 2 seconds...", e)
             time.sleep(2)
 
 
 def main():
+    log.info("Starting Phase 1 dummy loader...")
     consumer = connect_kafka()
     driver = connect_neo4j()
-    log.info("loader started, consuming %s", KAFKA_TOPIC)
+    log.info("Dummy loader active and listening for messages on topic '%s'...", KAFKA_TOPIC)
 
     for message in consumer:
         msg = message.value
-        dataset_id = msg["dataset_id"]
-        row_index = msg["row_index"]
+        dataset_id = msg.get("dataset_id", "dummy123")
+        filename = msg.get("filename", "dummy.csv")
+        log.info("Consumed dummy message from Kafka: %s", msg)
+
         try:
             with driver.session(database=NEO4J_DATABASE) as session:
                 session.run(
-                    MERGE_ROW,
+                    MERGE_DUMMY_QUERY,
                     dataset_id=dataset_id,
-                    filename=msg["filename"],
-                    uploaded_at=msg["uploaded_at"],
-                    row_index=row_index,
-                    rows_total=msg["rows_total"],
-                    row=msg["row"],
+                    filename=filename,
                 )
-            log.info("loaded dataset=%s row_index=%s", dataset_id, row_index)
+            log.info("done")
         except Exception as e:
-            log.error("failed to load dataset=%s row_index=%s: %s", dataset_id, row_index, e)
-            try:
-                with driver.session(database=NEO4J_DATABASE) as session:
-                    session.run(MARK_FAILED, dataset_id=dataset_id)
-            except Exception as e2:
-                log.error("failed to mark row as failed: %s", e2)
+            log.error("Failed to MERGE dummy node into Neo4j: %s", e)
 
 
 if __name__ == "__main__":

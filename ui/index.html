@@ -1,70 +1,445 @@
-<!doctype html>
-<html>
+<!DOCTYPE html>
+<html lang="en">
 <head>
-<meta charset="utf-8">
-<title>CSV → Kafka → Neo4j → Chat</title>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Data In, Answers Out</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
-  section { margin-bottom: 32px; padding: 16px; border: 1px solid #ddd; border-radius: 8px; }
-  pre { background: #f5f5f5; padding: 8px; overflow-x: auto; white-space: pre-wrap; }
-  input, button { font-size: 1rem; padding: 6px 10px; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f1115;
+    color: #e6e6e6;
+    margin: 0;
+    padding: 2rem;
+    line-height: 1.5;
+  }
+  .container { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+  .subtitle { color: #9aa0a6; margin-bottom: 2rem; font-size: 0.9rem; }
+  .card {
+    background: #1a1d24;
+    border: 1px solid #2a2e37;
+    border-radius: 10px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+  .card h2 {
+    font-size: 1rem;
+    margin: 0 0 1rem 0;
+    color: #c8cbd0;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  /* Upload zone */
+  .dropzone {
+    border: 2px dashed #3a3f4b;
+    border-radius: 8px;
+    padding: 2rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .dropzone:hover, .dropzone.dragover {
+    border-color: #5b8def;
+    background: #161a22;
+  }
+  .dropzone input { display: none; }
+  .dropzone p { margin: 0; color: #9aa0a6; }
+  .dropzone .filename { color: #e6e6e6; font-weight: 600; margin-top: 0.5rem; }
+
+  .error-box {
+    background: #3a1f1f;
+    border: 1px solid #7a3a3a;
+    color: #ffb3b3;
+    padding: 0.75rem 1rem;
+    border-radius: 6px;
+    margin-top: 1rem;
+    font-size: 0.9rem;
+    display: none;
+  }
+
+  /* Ingest result */
+  .meta-row {
+    display: flex;
+    gap: 1.5rem;
+    margin-top: 1rem;
+    flex-wrap: wrap;
+  }
+  .meta-item { font-size: 0.85rem; color: #9aa0a6; }
+  .meta-item strong { color: #e6e6e6; display: block; font-size: 1rem; }
+
+  /* Status badges */
+  .status-badge {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .status-queued { background: #3a3520; color: #e0c96b; }
+  .status-loading { background: #1f3550; color: #7db4f0; }
+  .status-complete { background: #1f3d28; color: #6bd68a; }
+  .status-failed { background: #3a1f1f; color: #ff8080; }
+
+  .spinner {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid #3a3f4b;
+    border-top-color: #7db4f0;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Preview table */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 1rem;
+    font-size: 0.85rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid #2a2e37;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
+  }
+  th { color: #9aa0a6; font-weight: 600; }
+  .table-wrap { overflow-x: auto; }
+
+  /* Chat */
+  .chat-input-row { display: flex; gap: 0.5rem; }
+  input[type="text"] {
+    flex: 1;
+    background: #12151b;
+    border: 1px solid #2a2e37;
+    color: #e6e6e6;
+    padding: 0.6rem 0.8rem;
+    border-radius: 6px;
+    font-size: 0.9rem;
+  }
+  input[type="text"]:focus { outline: none; border-color: #5b8def; }
+  button {
+    background: #5b8def;
+    color: white;
+    border: none;
+    padding: 0.6rem 1.2rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+  button:hover { background: #4a7bd9; }
+  button:disabled { background: #3a3f4b; cursor: not-allowed; }
+
+  .chat-answer {
+    margin-top: 1rem;
+    padding: 1rem;
+    background: #12151b;
+    border-radius: 8px;
+    border-left: 3px solid #5b8def;
+  }
+  .chat-answer.ungrounded { border-left-color: #e0a03a; }
+  .chat-answer-text { font-size: 1rem; margin-bottom: 0.5rem; }
+
+  .grounded-badge {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    margin-bottom: 0.75rem;
+  }
+  .grounded-true { background: #1f3d28; color: #6bd68a; }
+  .grounded-false { background: #3a2f1f; color: #e0a03a; }
+
+  details {
+    margin-top: 0.5rem;
+    font-size: 0.8rem;
+  }
+  summary {
+    cursor: pointer;
+    color: #9aa0a6;
+    margin-bottom: 0.5rem;
+  }
+  pre {
+    background: #0a0c10;
+    border: 1px solid #2a2e37;
+    border-radius: 6px;
+    padding: 0.75rem;
+    overflow-x: auto;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+    color: #a8e0c0;
+    margin: 0.25rem 0;
+  }
+
+  .empty-state { color: #6b6f78; font-size: 0.85rem; font-style: italic; }
 </style>
 </head>
 <body>
-  <h1>CSV → Kafka → Neo4j → Chat</h1>
+<div class="container">
+  <h1>Data In, Answers Out</h1>
+  <p class="subtitle">Upload a CSV, watch it load into the graph, then ask questions about it.</p>
 
-  <!-- TODO(Nitika): real upload/preview/progress UI. This is a bare-bones stub so the skeleton is clickable end to end. -->
-  <section>
+  <!-- Upload -->
+  <div class="card">
     <h2>1. Upload CSV</h2>
-    <input type="file" id="file" accept=".csv">
-    <button onclick="upload()">Upload</button>
-    <pre id="ingest-result"></pre>
-  </section>
+    <div class="dropzone" id="dropzone">
+      <input type="file" id="fileInput" accept=".csv" />
+      <p id="dropzoneText">Drag a CSV here, or click to browse</p>
+      <div class="filename" id="filename"></div>
+    </div>
+    <div class="error-box" id="uploadError"></div>
+    <div class="meta-row" id="ingestMeta" style="display:none;">
+      <div class="meta-item">Job ID<strong id="metaJobId">—</strong></div>
+      <div class="meta-item">Rows received<strong id="metaRowsReceived">—</strong></div>
+      <div class="meta-item">Status<strong id="metaStatus">—</strong></div>
+    </div>
+  </div>
 
-  <section>
-    <h2>2. Status</h2>
-    <button onclick="checkStatus()">Refresh status</button>
-    <pre id="status-result"></pre>
-  </section>
+  <!-- Preview + status -->
+  <div class="card">
+    <h2>2. Preview &amp; Load Status</h2>
+    <div id="statusPanel" class="empty-state">No file uploaded yet.</div>
+    <div class="table-wrap" id="previewTableWrap"></div>
+  </div>
 
-  <section>
-    <h2>3. Ask a question</h2>
-    <input type="text" id="question" placeholder="How many rows belong to the Billing group?" style="width: 70%">
-    <button onclick="ask()">Ask</button>
-    <pre id="chat-result"></pre>
-  </section>
+  <!-- Chat -->
+  <div class="card">
+    <h2>3. Ask Your Data</h2>
+    <div class="chat-input-row">
+      <input type="text" id="chatInput" placeholder="How many rows belong to Billing?" />
+      <button id="chatBtn">Ask</button>
+    </div>
+    <div id="chatError" class="error-box"></div>
+    <div id="chatResult"></div>
+  </div>
+</div>
 
 <script>
-const API = window.location.hostname + ':8000';
-let jobId = null;
+const API_BASE = "http://localhost:8000";
 
-async function upload() {
-  const f = document.getElementById('file').files[0];
-  if (!f) return alert('choose a file first');
-  const form = new FormData();
-  form.append('file', f);
-  const res = await fetch(`http://${API}/ingest`, { method: 'POST', body: form });
-  const data = await res.json();
-  jobId = data.job_id;
-  document.getElementById('ingest-result').textContent = JSON.stringify(data, null, 2);
+let currentJobId = null;
+let pollTimer = null;
+
+// ---------- Upload ----------
+const dropzone = document.getElementById("dropzone");
+const fileInput = document.getElementById("fileInput");
+const dropzoneText = document.getElementById("dropzoneText");
+const filenameEl = document.getElementById("filename");
+const uploadError = document.getElementById("uploadError");
+const ingestMeta = document.getElementById("ingestMeta");
+
+dropzone.addEventListener("click", () => fileInput.click());
+dropzone.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  dropzone.classList.add("dragover");
+});
+dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
+dropzone.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dropzone.classList.remove("dragover");
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener("change", () => {
+  if (fileInput.files.length) handleFile(fileInput.files[0]);
+});
+
+function showUploadError(msg) {
+  uploadError.textContent = msg;
+  uploadError.style.display = "block";
+}
+function hideUploadError() {
+  uploadError.style.display = "none";
 }
 
-async function checkStatus() {
-  if (!jobId) return alert('upload a file first');
-  const res = await fetch(`http://${API}/status?job_id=${jobId}`);
-  const data = await res.json();
-  document.getElementById('status-result').textContent = JSON.stringify(data, null, 2);
+async function handleFile(file) {
+  hideUploadError();
+  filenameEl.textContent = file.name;
+  dropzoneText.textContent = "Uploading…";
+
+  // Client-side preview parse (best-effort only; server does its own parsing)
+  try {
+    const text = await file.text();
+    renderPreview(text);
+  } catch (err) {
+    console.error("Preview parse failed:", err);
+  }
+
+  // Upload to API
+  const formData = new FormData();
+  formData.append("file", file);
+
+  try {
+    const res = await fetch(`${API_BASE}/ingest`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Server returned ${res.status}: ${body}`);
+    }
+    const data = await res.json();
+    dropzoneText.textContent = "Drag a CSV here, or click to browse";
+
+    currentJobId = data.job_id;
+    ingestMeta.style.display = "flex";
+    document.getElementById("metaJobId").textContent = data.job_id ?? "—";
+    document.getElementById("metaRowsReceived").textContent = data.rows_received ?? "—";
+    document.getElementById("metaStatus").textContent = data.status ?? "—";
+
+    startStatusPolling(currentJobId);
+  } catch (err) {
+    dropzoneText.textContent = "Drag a CSV here, or click to browse";
+    showUploadError(`Upload failed: ${err.message}. Is the API running at ${API_BASE}?`);
+    console.error(err);
+  }
 }
 
-async function ask() {
-  const question = document.getElementById('question').value;
-  const res = await fetch(`http://${API}/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question }),
+// ---------- CSV preview (client-side, display only) ----------
+function renderPreview(csvText) {
+  const wrap = document.getElementById("previewTableWrap");
+  const lines = csvText.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  if (lines.length === 0) {
+    wrap.innerHTML = `<div class="empty-state">File appears empty.</div>`;
+    return;
+  }
+  const header = lines[0].split(",");
+  const rows = lines.slice(1, 11).map((l) => l.split(","));
+
+  let html = "<table><thead><tr>";
+  header.forEach((h) => (html += `<th>${escapeHtml(h.trim())}</th>`));
+  html += "</tr></thead><tbody>";
+  rows.forEach((r) => {
+    html += "<tr>";
+    r.forEach((cell) => (html += `<td>${escapeHtml((cell || "").trim())}</td>`));
+    html += "</tr>";
   });
-  const data = await res.json();
-  document.getElementById('chat-result').textContent = JSON.stringify(data, null, 2);
+  html += "</tbody></table>";
+  if (lines.length - 1 > 10) {
+    html += `<div class="empty-state" style="margin-top:0.5rem;">Showing first 10 of ${lines.length - 1} rows (preview only — server parses the full file).</div>`;
+  }
+  wrap.innerHTML = html;
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// ---------- Status polling ----------
+function startStatusPolling(jobId) {
+  if (pollTimer) clearInterval(pollTimer);
+  updateStatus(jobId); // immediate first check
+  pollTimer = setInterval(() => updateStatus(jobId), 1500);
+}
+
+async function updateStatus(jobId) {
+  const panel = document.getElementById("statusPanel");
+  try {
+    const res = await fetch(`${API_BASE}/status?job_id=${encodeURIComponent(jobId)}`);
+    if (!res.ok) {
+      panel.innerHTML = `<span class="status-badge status-failed">error</span> Could not fetch status (${res.status}).`;
+      clearInterval(pollTimer);
+      return;
+    }
+    const data = await res.json();
+    renderStatus(data);
+
+    if (data.status === "complete" || data.status === "failed") {
+      clearInterval(pollTimer);
+    }
+  } catch (err) {
+    panel.innerHTML = `<span class="status-badge status-failed">error</span> ${err.message}`;
+    clearInterval(pollTimer);
+    console.error(err);
+  }
+}
+
+function renderStatus(data) {
+  const panel = document.getElementById("statusPanel");
+  const status = data.status || "unknown";
+  const spinner = (status === "queued" || status === "loading") ? '<span class="spinner"></span>' : "";
+  panel.innerHTML = `
+    ${spinner}<span class="status-badge status-${status}">${status}</span>
+    <div class="meta-row">
+      <div class="meta-item">Total<strong>${data.rows_total ?? "—"}</strong></div>
+      <div class="meta-item">Loaded<strong>${data.rows_loaded ?? "—"}</strong></div>
+      <div class="meta-item">Failed<strong>${data.rows_failed ?? "—"}</strong></div>
+    </div>
+  `;
+}
+
+// ---------- Chat ----------
+const chatInput = document.getElementById("chatInput");
+const chatBtn = document.getElementById("chatBtn");
+const chatError = document.getElementById("chatError");
+const chatResult = document.getElementById("chatResult");
+
+chatBtn.addEventListener("click", askQuestion);
+chatInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") askQuestion();
+});
+
+async function askQuestion() {
+  const question = chatInput.value.trim();
+  if (!question) return;
+
+  chatError.style.display = "none";
+  chatBtn.disabled = true;
+  chatBtn.textContent = "Asking…";
+
+  try {
+    const res = await fetch(`${API_BASE}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Server returned ${res.status}: ${body}`);
+    }
+    const data = await res.json();
+    renderChatResult(data);
+  } catch (err) {
+    chatError.textContent = `Chat failed: ${err.message}`;
+    chatError.style.display = "block";
+    console.error(err);
+  } finally {
+    chatBtn.disabled = false;
+    chatBtn.textContent = "Ask";
+  }
+}
+
+function renderChatResult(data) {
+  const grounded = !!data.grounded;
+  const html = `
+    <div class="chat-answer ${grounded ? "" : "ungrounded"}">
+      <span class="grounded-badge ${grounded ? "grounded-true" : "grounded-false"}">
+        ${grounded ? "Grounded" : "Not grounded"}
+      </span>
+      <div class="chat-answer-text">${escapeHtml(data.answer || "(no answer returned)")}</div>
+      <details>
+        <summary>Show Cypher &amp; raw result</summary>
+        <pre>${escapeHtml(data.cypher || "(no cypher returned)")}</pre>
+        <pre>${escapeHtml(JSON.stringify(data.result ?? [], null, 2))}</pre>
+      </details>
+    </div>
+  `;
+  chatResult.innerHTML = html;
 }
 </script>
 </body>
