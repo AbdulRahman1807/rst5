@@ -8,7 +8,7 @@ import time
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from kafka import KafkaProducer
-from kafka.errors import NoBrokersAvailable
+from kafka.errors import KafkaError, NoBrokersAvailable
 from neo4j import GraphDatabase
 from neo4j.exceptions import ServiceUnavailable, AuthError
 
@@ -41,13 +41,24 @@ _driver = None
 
 
 def get_producer() -> KafkaProducer:
+    # Kafka needs a few seconds to elect itself leader even as a single broker; retry on
+    # connection-refused instead of crashing the request (per handout 2.5).
     global _producer
     if _producer is None:
-        _producer = KafkaProducer(
-            bootstrap_servers=KAFKA_BROKERS,
-            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-            key_serializer=lambda k: k.encode("utf-8"),
-        )
+        last_err = None
+        for attempt in range(5):
+            try:
+                _producer = KafkaProducer(
+                    bootstrap_servers=KAFKA_BROKERS,
+                    value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+                    key_serializer=lambda k: k.encode("utf-8"),
+                )
+                break
+            except NoBrokersAvailable as e:
+                last_err = e
+                time.sleep(1)
+        else:
+            raise last_err
     return _producer
 
 
@@ -109,18 +120,22 @@ async def ingest(file: UploadFile = File(...)):
 
     jobs[dataset_id] = {"rows_received": rows_total, "received_at": uploaded_at}
 
-    producer = get_producer()
-    for i, row in enumerate(rows):
-        message = {
-            "dataset_id": dataset_id,
-            "filename": file.filename,
-            "uploaded_at": uploaded_at,
-            "row_index": i,
-            "rows_total": rows_total,
-            "row": row,
-        }
-        producer.send(KAFKA_TOPIC, key=dataset_id, value=message)
-    producer.flush()
+    try:
+        producer = get_producer()
+        for i, row in enumerate(rows):
+            message = {
+                "dataset_id": dataset_id,
+                "filename": file.filename,
+                "uploaded_at": uploaded_at,
+                "row_index": i,
+                "rows_total": rows_total,
+                "row": row,
+            }
+            producer.send(KAFKA_TOPIC, key=dataset_id, value=message)
+        producer.flush()
+    except KafkaError as e:
+        log.error("kafka publish failed for dataset=%s: %s", dataset_id, e)
+        raise HTTPException(status_code=503, detail="kafka temporarily unavailable, please retry")
 
     return {"job_id": dataset_id, "rows_received": rows_total, "status": "queued"}
 
