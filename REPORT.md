@@ -71,6 +71,8 @@ Observed counts from a live run (fresh volumes, one file per `Dataset`), cross-c
 | Kafka client | `confluent-kafka` (librdkafka) | `kafka-python` | `kafka-python`'s maintenance/compatibility with newer KRaft-mode brokers is a known risk; `confluent-kafka` is the actively-maintained, battle-tested client |
 | Neo4j database name | `csv-graph-db` | Event's literal fixed name `CSV_Graph_DB` | Neo4j 5.x database names may only contain letters, digits, dots, and dashes — no underscores. The literal name is rejected by Neo4j itself at startup; substituting dashes is the minimal necessary deviation, documented here per the handout's request to explain stack deviations |
 | `groq` SDK version | `groq==0.37.1` | `groq==0.11.0` (initial pin) | The old version passes a now-removed `proxies` argument to `httpx.Client()`; our unpinned `httpx` resolved to 0.28.1 at build time, which rejects it. Container-only failure — host-side testing didn't catch it because the host already had a compatible version pair installed from earlier work. Caught by the first live `/chat` test after the stack came up, not before |
+| Neo4j container user | `user: "7474:7474"` (image's built-in non-root user) | Default (runs as root) | Requirement #9 is mandatory; the official Neo4j image defaults to root and needed an explicit override. Caught by directly checking `docker exec ... whoami` on every container, not by assumption — Kafka, api, loader, and ui were all already correctly non-root, only Neo4j wasn't |
+| `MARK_FAILED` Dataset lookup | `MERGE` (create-if-missing) | `MATCH` (assume it exists) | Verified live: if the *first* row processed for a dataset is also the one that fails, no `:Dataset` node exists yet — a `MATCH` silently finds nothing and the failure is dropped with zero trace (no `rows_failed` increment anywhere). Reproduced by manually publishing a Neo4j-incompatible row directly to Kafka, bypassing `/ingest` |
 | Status counter idempotency | `rows_loaded`/`rows_failed` incremented only on genuine first-creation of a `:Row`/`:FailedRow` node (Cypher `FOREACH`-conditional-`SET` idiom, since Cypher has no native conditional `SET`) | Unconditional `SET d.rows_loaded = d.rows_loaded + 1` after every `MERGE` | The handout explicitly supports replaying the Kafka topic to reload the graph, and any loader restart mid-run re-consumes some already-processed messages before the next auto-commit checkpoint — both would silently double-count `rows_loaded` under the naive approach even though the underlying `:Row` nodes stayed correctly idempotent |
 | How api knows kafka/neo4j are ready | Docker Compose healthchecks (`condition: service_healthy`) + retry-on-connection-refused in api/loader connection code | `depends_on` alone | `depends_on` only waits for container start, not Kafka leader election or Neo4j accepting Bolt connections |
 
@@ -133,6 +135,18 @@ trusting this table at face value:**
 Also worth recording: `large.csv` (5,021 rows loaded at one point during broader testing) — asking
 to list all rows returned exactly 200, not all 5,021, i.e. capped by design rather than dumping the
 graph.
+
+**`/health` degradation, tested by actually killing dependencies** (not just reading the code):
+stopped the `kafka` container → `/health` correctly returned `{"status":"not_ok","kafka_connected":false,"neo4j_connected":true}`; restarted it → recovered to `ok` within seconds. Repeated for `neo4j` with the same correct result both ways.
+
+**`rows_failed`, tested by actually triggering a genuine write failure** (not just reading the code):
+our hostile-input CSVs all load "successfully" by design (ragged rows tolerated), so this path was
+otherwise never exercised. Bypassed `/ingest` and published a row with a nested-object property value
+directly to Kafka — Neo4j correctly rejected it (`Neo.ClientError.Statement.TypeError`), the loader
+caught it, and `rows_failed` incremented correctly, with `status` reaching `complete` once
+`rows_loaded + rows_failed == rows_total`. Replaying the identical failing message a second time left
+`rows_failed` at 1, not 2 — confirmed the `:FailedRow` idempotency guard also holds. This test run is
+what surfaced the `MARK_FAILED` bug fixed above.
 
 ## 9.5 How we worked
 

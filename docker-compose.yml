@@ -30,6 +30,7 @@ services:
     container_name: neo4j
     networks:
       - pipeline-net
+    user: "7474:7474"  # image's built-in non-root neo4j user — default is root, req #9 mandates non-root
     environment:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-csvgraphdb}
       # Neo4j 5.x database names may only contain ASCII letters, digits, dots, and dashes — no
