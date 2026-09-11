@@ -25,7 +25,7 @@ Five services, orchestrated by one `docker-compose.yml`, with zero manual steps 
 2. **api** — `POST /ingest` (accept upload, publish to Kafka), `GET /status` (load progress), `POST /chat` (answer questions), `GET /health`.
 3. **kafka** — single-broker topic `csv-rows`, one message per CSV row. Decouples upload from graph write.
 4. **loader** — consumes the topic, `MERGE`s each row into Neo4j as it arrives (never `CREATE` — must be idempotent).
-5. **neo4j** — graph DB, instance `CSV_Graph_DB`, read by `/chat`, written by the loader.
+5. **neo4j** — graph DB, instance `csv-graph-db` (event's fixed name `CSV_Graph_DB` contains underscores, which Neo4j 5.x rejects in database names — see [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)), read by `/chat`, written by the loader.
 
 Graph model (keep boring/generic unless time allows enrichment):
 ```
@@ -52,7 +52,7 @@ Pulled directly from the handout (Part 7.1 "Must-have"), nothing added:
 10. Two clean runs against the same CSV produce identical row and relationship counts.
 
 Other explicit constraints:
-- Neo4j credentials are fixed for the event: `Database Name: CSV_Graph_DB`, `Password: csvgraphdb` — must be wired in as env vars, never hard-coded.
+- Neo4j credentials are fixed for the event: `Database Name: CSV_Graph_DB`, `Password: csvgraphdb` — must be wired in as env vars, never hard-coded. **Deviation:** the literal database name is technically invalid in Neo4j 5.x (underscores not allowed), so we use `csv-graph-db` instead — see [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 - Kafka: single broker, KRaft mode (no separate ZooKeeper needed).
 - Report: one file, `REPORT.md`, committed before the 7:25 PM freeze, with sections specified in handout Part 9 (what we built, data & graph model, methods table, results table of ≥8 test questions, how we worked, limitations, how to run it).
 - LLM use is **confirmed allowed** for this event. We're using the **GroqCloud API** (API key required — must be wired in as an env var, never hard-coded or baked into an image, same rule as the Neo4j password).

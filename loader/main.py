@@ -3,8 +3,7 @@ import logging
 import os
 import time
 
-from kafka import KafkaConsumer
-from kafka.errors import NoBrokersAvailable
+from confluent_kafka import Consumer, KafkaException
 from neo4j import GraphDatabase
 from neo4j.exceptions import ServiceUnavailable
 
@@ -52,20 +51,22 @@ SET d.status = CASE WHEN d.rows_loaded + d.rows_failed >= d.rows_total THEN 'com
 """
 
 
-def connect_kafka() -> KafkaConsumer:
+def connect_kafka() -> Consumer:
+    consumer = Consumer({
+        "bootstrap.servers": KAFKA_BROKERS,
+        "group.id": "loader",
+        "auto.offset.reset": "earliest",
+        "enable.auto.commit": True,
+    })
     while True:
         try:
-            return KafkaConsumer(
-                KAFKA_TOPIC,
-                bootstrap_servers=KAFKA_BROKERS,
-                group_id="loader",
-                auto_offset_reset="earliest",
-                enable_auto_commit=True,
-                value_deserializer=lambda v: json.loads(v.decode("utf-8")),
-            )
-        except NoBrokersAvailable:
+            consumer.list_topics(timeout=3)  # forces a broker round-trip; raises if not reachable yet
+            break
+        except KafkaException:
             log.info("kafka not ready yet, retrying...")
             time.sleep(2)
+    consumer.subscribe([KAFKA_TOPIC])
+    return consumer
 
 
 def connect_neo4j():
@@ -84,8 +85,15 @@ def main():
     driver = connect_neo4j()
     log.info("loader started, consuming %s", KAFKA_TOPIC)
 
-    for message in consumer:
-        msg = message.value
+    while True:
+        kmsg = consumer.poll(1.0)
+        if kmsg is None:
+            continue
+        if kmsg.error():
+            log.error("kafka consume error: %s", kmsg.error())
+            continue
+
+        msg = json.loads(kmsg.value().decode("utf-8"))
         dataset_id = msg["dataset_id"]
         row_index = msg["row_index"]
         try:
