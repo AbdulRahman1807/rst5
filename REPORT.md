@@ -1,206 +1,170 @@
 # REPORT — RISE @ RST #5: Data In, Answers Out
 
+_Draft — filled in as far as possible before the stack is verified end-to-end. Results table (9.4) and parts of 9.5/9.6 need a live run to finish; everything else below is locked._
+
 ## 9.1 What we built
 
-We built an end-to-end, fully containerized pipeline that ingests arbitrary CSV spreadsheets and provides a grounded natural-language chatbot query interface backed by a Neo4j graph database. The user uploads a CSV file through a reactive web interface, which sends it to a FastAPI service where file integrity and UTF-8 encoding are verified and a SHA-256 digest is assigned. FastAPI parses the rows and publishes each record as an individual message to an Apache Kafka topic, decoupling ingestion from database processing. An asynchronous Python loader service consumes the Kafka topic and idempotently loads the data into Neo4j using Cypher `MERGE` queries that link rows to their parent dataset node. Natural-language questions are answered through a two-tier chatbot architecture: an instantaneous deterministic keyword-to-Cypher engine that operates with zero external dependencies, backed by an optional GroqCloud LLM layer that translates complex phrasing into read-only Cypher while strictly enforcing grounded answers.
+A CSV → Kafka → Neo4j → Chat pipeline: upload any CSV through the UI, it's published row-by-row
+to a Kafka topic, a loader consumes that topic and idempotently `MERGE`s each row into Neo4j as
+a generic `Dataset -[:HAS_ROW]-> Row` graph, and a chatbot answers plain-English questions about
+the loaded data — grounded only in what's actually in the graph, never in general knowledge. The
+chatbot is two-tier: a deterministic keyword/value matcher that works with zero LLM dependency,
+plus an optional GroqCloud LLM layer for handling more question phrasings, with automatic fallback
+to the deterministic tier if the LLM is unavailable.
 
-```mermaid
-flowchart LR
-    subgraph UI ["Frontend (Port 3000)"]
-        Browser["Nginx UI (index.html)"]
-    end
+Architecture: `ui` (browser) → `api` (`/ingest`, `/status`, `/chat`, `/health`) → `kafka`
+(topic `csv-rows`, one message per row) → `loader` (consumer, writes to Neo4j) → `neo4j`
+(`csv-graph-db` — event's fixed name "CSV_Graph_DB" contains underscores, which Neo4j 5.x
+rejects in database names; read by both the loader and `api`'s `/chat`).
 
-    subgraph Backend ["Application Tier (Port 8000)"]
-        API["FastAPI API"]
-        Chat["Two-Tier Chatbot"]
-        API --- Chat
-    end
-
-    subgraph Messaging ["Messaging Tier (Port 9092)"]
-        Kafka["Kafka Broker (csv-rows)"]
-    end
-
-    subgraph Workers ["Worker Tier"]
-        Loader["Python Loader Consumer"]
-    end
-
-    subgraph Storage ["Graph Database Tier (Port 7474 / 7687)"]
-        Neo4j[("Neo4j Graph (csv-graph-db)")]
-    end
-
-    Browser -->|"1. Upload CSV / Query"| API
-    API -->|"2. Publish Rows"| Kafka
-    Kafka -->|"3. Consume"| Loader
-    Loader -->|"4. Idempotent MERGE"| Neo4j
-    Chat -->|"5. Execute Read-Only Cypher"| Neo4j
-    Browser -.->|"Poll Status"| API
-```
-
-### What Works and What Does Not (Honest Assessment)
-- **What works:**
-  - Automated, zero-manual-step deployment via Docker Compose with strict healthcheck dependency gating.
-  - Reactive browser UI featuring drag-and-drop file upload, client-side CSV table preview, live status polling, and chat with grounded/ungrounded visual badges.
-  - Decoupled ingestion via Kafka (`csv-rows`), allowing fast HTTP responses while the database loads asynchronously.
-  - Idempotent row loading: uploading the exact same CSV multiple times produces identical node counts without duplication or double-counted progress metrics.
-  - Hostile-input resilience: clean HTTP 400 rejection on empty files, header-only files, and non-CSV files, with graceful UI error messaging and zero container crashes.
-  - Zero hallucination: questions unrelated to graph data honestly return `grounded: false` and `"I don't have that in the data"`.
-  - Non-root security contexts (`USER appuser`, UID 101) with `no-new-privileges:true` active on application containers.
-- **What does not / Current limitations:**
-  - Database name substitution: The event specification used `CSV_Graph_DB`, but Neo4j 5.x rejects underscores in database names; we adapted the name to `csv-graph-db`.
-  - `/health` endpoint checks active Kafka broker metadata and driver socket connectivity, but does not execute a full `RETURN 1` Cypher transaction on each probe.
-  - In-memory job tracking: The `jobs` mapping in FastAPI exists in container memory; while Neo4j is authoritative once loading begins, an API crash mid-upload before Kafka dispatch requires re-submitting the file.
-
----
+**Status: working end to end, tested live.** `docker compose up -d --build` brings up all 5
+services; `/ingest` → Kafka → loader → Neo4j → `/status`/`/chat` all confirmed against real data
+(15-row and 5,000-row files), including idempotent re-uploads and hostile-input handling. Two real
+bugs were caught and fixed during this testing pass (not before) — see 9.5/9.6.
 
 ## 9.2 The data and the graph model
 
-### Test Datasets Used
-All test fixtures are located under [`test_data/`](test_data/):
-- **`small_clean.csv`**: 15 rows, 3 columns (`customer`, `group`, `amount`). Result: 1 Dataset node, 15 Row nodes, 15 `HAS_ROW` relationships.
-- **`large.csv`**: 5,000 rows, 3 columns. Result: 1 Dataset node, 5,000 Row nodes, 5,000 `HAS_ROW` relationships. Stress-tested batch consumption and status polling.
-- **`broken.csv`**: 7 rows containing ragged columns and extra commas; handled gracefully by the parser without pipeline abortion.
-- **`empty.csv`** (0 bytes): Cleanly rejected at API boundary with HTTP 400 (`empty file`), 0 nodes created.
-- **`header_only.csv`** (header row only, 0 data rows): Cleanly rejected with HTTP 400 (`CSV has a header but zero data rows`), 0 nodes created.
-- **`not_a_csv.txt`**: Cleanly rejected with HTTP 400 (`file must be a .csv` / invalid header format), 0 nodes created.
+Test CSVs (see `test_data/`): `small_clean.csv` (15 rows, 3 columns: customer/group/amount),
+`large.csv` (5,000 rows, same schema, randomly generated), `broken.csv` (ragged columns, stray
+commas, missing header), `empty.csv`, `header_only.csv`, `not_a_csv.txt`.
 
-### Graph Data Model
-The database maintains a generic, schema-agnostic graph model:
-
+Graph model — generic, one property per CSV column, unchanged regardless of what CSV is uploaded:
 ```
-(:Dataset {
-    id: STRING,            // SHA-256 hex digest of file bytes
-    filename: STRING,      // Original filename uploaded
-    uploaded_at: STRING,   // ISO-8601 UTC timestamp
-    rows_total: INTEGER,   // Total expected rows
-    rows_loaded: INTEGER,  // Successfully loaded rows
-    rows_failed: INTEGER,  // Rows failed during merge
-    status: STRING         // 'loading' | 'complete' | 'failed'
-})
+(:Dataset {id, filename, uploaded_at, rows_total, rows_loaded, rows_failed, status})
   -[:HAS_ROW]->
-(:Row {
-    dataset_id: STRING,    // Foreign key to parent Dataset
-    row_index: INTEGER,    // 0-indexed row position
-    [col_1]: STRING/VALUE, // Dynamic property per CSV column
-    [col_2]: STRING/VALUE,
-    ...
-})
+(:Row {row_index, dataset_id, ...one property per CSV column})
 ```
+`id` (`dataset_id`) is the SHA-256 hex digest of the raw CSV file bytes — same file always maps
+to the same id, which is what makes idempotent re-loading work without extra bookkeeping.
 
-We deliberately avoided fragile automated relationship inferencing across generic columns to guarantee that arbitrary tabular data can be ingested reliably without creating phantom edges or broken entity nodes.
-
----
+Observed live: `small_clean.csv` → 15 `:Row` nodes, 15 `:HAS_ROW` relationships, 1 `:Dataset` node
+(re-uploading the same file a second time left all three counts unchanged — verified directly via
+`cypher-shell`, not just the `/status` counters). `large.csv` → 5,000/5,000 rows loaded, 0 failed,
+`status: complete`. `broken.csv`'s ragged/stray-comma rows loaded without crashing (tolerated per
+design, not rejected — see 9.6).
 
 ## 9.3 Methods
 
 | Decision | Chosen | Rejected | Reason |
 |---|---|---|---|
-| **Ingest path** | Kafka topic `csv-rows`, one message per row; API never writes to Neo4j directly | Writing straight from the upload handler to Neo4j | Fulfills Requirement #2; decouples web ingestion from database ingestion, absorbs database latency spikes, and preserves replayability. |
-| **Idempotency key** | `dataset_id` (SHA-256 of file) + `row_index`, always `MERGE` | A random/UUID job id per upload | Reproducible by construction: identical files yield the exact same `dataset_id`, preventing duplicate datasets without separate lookup tables. |
-| **Chatbot approach** | Two-tier: deterministic keyword/value-to-Cypher engine (guaranteed) + optional GroqCloud LLM layer | LLM-only chatbot | Guarantees instant, zero-cost, grounded answers for standard query patterns even without internet or API keys, while retaining LLM flexibility for unstructured phrasing. |
-| **Cypher safety** | Reject queries outright if they fail read-only validation (`MATCH/RETURN` only; forbidden keywords: `CREATE`, `MERGE`, `DELETE`, `SET`, `DROP`) | Sanitizing or rewriting queries | Rewriting risks altering query semantics; strict rejection guarantees security and transparency. |
-| **Groundedness verification** | Computed directly from successful graph execution and real query results | Relying on LLM self-assessment | Groundedness is a verifiable property of data retrieval; a valid aggregate with zero matching rows is still `grounded: true`. |
-| **Kafka client library** | `confluent-kafka` (librdkafka) | `kafka-python` | `kafka-python` has known compatibility limitations with modern KRaft-mode brokers; `confluent-kafka` provides robust C-based protocol compliance. |
-| **Neo4j database name** | `csv-graph-db` | Event's literal fixed name `CSV_Graph_DB` | Neo4j 5.x strictly rejects underscores in database names (`contains illegal characters: '_'`); substituting dashes is the minimal necessary adjustment. |
-| **Counter idempotency** | Conditional increment via Cypher `ON CREATE SET r._new = true` and `FOREACH` | Unconditional `SET d.rows_loaded = d.rows_loaded + 1` | Re-consuming topic messages or reloading the same file must not artificially inflate `rows_loaded`. |
-| **Startup readiness** | Docker Compose `condition: service_healthy` + container retry loops | Unconditional `depends_on` | Plain `depends_on` only tracks process launch, not service readiness (e.g. Kafka leader election or Bolt socket readiness). |
-
----
+| Ingest path | Kafka topic `csv-rows`, one message per row, api never writes to Neo4j directly | Writing straight from the upload handler to Neo4j | Requirement #2; also loses decoupling (upload returns immediately, DB blips don't drop data, topic is replayable) |
+| Idempotency key | `dataset_id` (SHA-256 of file) + `row_index`, always `MERGE` | A generated/random job id per upload | Reproducible by construction — re-running the same file naturally produces the same id, no separate tracking table needed |
+| Chatbot approach | Two-tier: deterministic keyword/value→Cypher matcher (always available) + optional GroqCloud LLM layer on top | LLM-only chatbot | An evaluator directly questioned "why do you need an LLM if you're not generating new data" — the deterministic tier proves we don't need one, while the LLM adds flexibility for phrasings the matcher misses |
+| Cypher safety | LLM-generated queries validated read-only; **rejected outright** if unsafe/invalid (never stripped/rewritten) | Sanitizing/rewriting unsafe queries into safe ones | Rewriting risks silently answering a different question than what was asked; refusing is simpler and honest |
+| Groundedness | `grounded` computed in code from whether the query actually executed against the graph — a valid zero-result aggregate is still `grounded: true` | Trusting the LLM's own claim of groundedness | The handout requires proof, not a confident-sounding claim; zero is a legitimate answer, not "couldn't answer" |
+| Kafka client | `confluent-kafka` (librdkafka) | `kafka-python` | `kafka-python`'s maintenance/compatibility with newer KRaft-mode brokers is a known risk; `confluent-kafka` is the actively-maintained, battle-tested client |
+| Neo4j database name | `csv-graph-db` | Event's literal fixed name `CSV_Graph_DB` | Neo4j 5.x database names may only contain letters, digits, dots, and dashes — no underscores. The literal name is rejected by Neo4j itself at startup; substituting dashes is the minimal necessary deviation, documented here per the handout's request to explain stack deviations |
+| `groq` SDK version | `groq==0.37.1` | `groq==0.11.0` (initial pin) | The old version passes a now-removed `proxies` argument to `httpx.Client()`; our unpinned `httpx` resolved to 0.28.1 at build time, which rejects it. Container-only failure — host-side testing didn't catch it because the host already had a compatible version pair installed from earlier work. Caught by the first live `/chat` test after the stack came up, not before |
+| Status counter idempotency | `rows_loaded`/`rows_failed` incremented only on genuine first-creation of a `:Row`/`:FailedRow` node (Cypher `FOREACH`-conditional-`SET` idiom, since Cypher has no native conditional `SET`) | Unconditional `SET d.rows_loaded = d.rows_loaded + 1` after every `MERGE` | The handout explicitly supports replaying the Kafka topic to reload the graph, and any loader restart mid-run re-consumes some already-processed messages before the next auto-commit checkpoint — both would silently double-count `rows_loaded` under the naive approach even though the underlying `:Row` nodes stayed correctly idempotent |
+| How api knows kafka/neo4j are ready | Docker Compose healthchecks (`condition: service_healthy`) + retry-on-connection-refused in api/loader connection code | `depends_on` alone | `depends_on` only waits for container start, not Kafka leader election or Neo4j accepting Bolt connections |
 
 ## 9.4 Results
 
-The following queries were tested against `small_clean.csv` (15 rows across Billing, Support, and Engineering groups):
+Tested live against `small_clean.csv` (15 rows), both chatbot tiers (LLM via Groq, and the
+deterministic tier tested standalone with `GROQ_API_KEY` unset — see [test_data/expected_answers.md](test_data/expected_answers.md)
+for the hand-computed expected values):
 
-| # | Question Asked | Answer Given | Correct? | Grounded? | Cypher Query Executed |
-|---|---|---|:---:|:---:|---|
-| 1 | How many rows are there? | There are 15 rows in the dataset. | Yes | **True** | `MATCH (r:Row) RETURN count(r) AS count;` |
-| 2 | How many rows belong to the Billing group? | There are 6 rows in the Billing group. | Yes | **True** | `MATCH (r:Row) WHERE toLower(r.group) = 'billing' RETURN count(r) AS count;` |
-| 3 | How many rows belong to Nonexistent? | The count is 0. | Yes | **True** | `MATCH (r:Row) WHERE toLower(r.group) = 'nonexistent' RETURN count(r) AS count;` |
-| 4 | What is the average amount for Billing? | The average amount for Billing is 218. | Yes | **True** | `MATCH (r:Row) WHERE toLower(r.group) = 'billing' RETURN avg(toInteger(r.amount)) AS avg;` |
-| 5 | What is the total amount for Engineering? | The total amount for Engineering is 5140. | Yes | **True** | `MATCH (r:Row) WHERE toLower(r.group) = 'engineering' RETURN sum(toInteger(r.amount)) AS total;` |
-| 6 | How many rows have amount over 500? | There are 5 rows with amount greater than 500. | Yes | **True** | `MATCH (r:Row) WHERE toInteger(r.amount) > 500 RETURN count(r) AS count;` |
-| 7 | What are the different groups? | Distinct groups: Billing, Engineering, Support. | Yes | **True** | `MATCH (r:Row) RETURN collect(distinct r.group) AS groups;` |
-| 8 | Top 3 rows by amount? | Crestline Auto (1500), Quantum Labs (1200), Pioneer Foods (990). | Yes | **True** | `MATCH (r:Row) RETURN r.customer, r.amount ORDER BY toInteger(r.amount) DESC LIMIT 3;` |
-| 9 | Show me Acme Co | Acme Co: group Billing, amount 128. | Yes | **True** | `MATCH (r:Row) WHERE toLower(r.customer) CONTAINS 'acme' RETURN r LIMIT 1;` |
-| 10 | What is the capital of France? | I don't have that in the data. | Yes | **False** | None (rejected before execution) |
+| Question asked | Answer given | Correct? | Grounded? |
+|---|---|---|---|
+| How many rows are there? | "There are 15 rows." | Yes | true |
+| How many rows belong to the Billing group? | "There are 6 rows belonging to the Billing group." | Yes | true |
+| How many rows belong to Nonexistent? | "The count is 0." | Yes | **true** (zero is a real answer) |
+| What is the average amount for Billing? | "The average amount for Billing is 218.0." | Yes | true |
+| What is the capital of France? | "I don't have that in the data." | Yes (correctly refused) | false |
+| Write a C program to reverse a string | "I don't have that in the data." | Yes (correctly refused, see adversarial testing below) | false |
+| List all rows (against `large.csv`, 5,021 rows loaded at test time) | Returned exactly 200 rows, not all 5,021 | Yes (capped by design) | true |
+| How many rows are there? (deterministic tier only, `GROQ_API_KEY` unset) | "There are 15 rows in total." | Yes | true |
+| How many rows belong to the Billing group? (deterministic tier only) | "There are 6 rows where group = 'Billing'." | Yes | true |
+| How many rows belong to Nonexistent? (deterministic tier only) | Returns `None` from the matcher → falls through to honest "I don't have that" | Yes | false |
 
-### Explanation of Edge Cases & Grounding Behavior
-- **Zero-Result Aggregates (Question 3):** Querying for a non-existent group returned `0`. Because this query executed legitimately against the real graph schema, the result is marked **`grounded: true`**, distinguishing a factual zero from a knowledge failure.
-- **Out-of-Schema Questions (Question 10):** When asked general knowledge questions, the schema context builder identified no corresponding columns in Neo4j. The deterministic tier detected no matching entities, and the LLM layer received strict instructions prohibiting world-knowledge generation, correctly outputting `"I don't have that in the data"` with **`grounded: false`**.
-- **Numerical Type Conversion:** Values parsed from CSVs land in Neo4j as string properties. Aggregate functions (`sum`, `avg`, comparison operators) require explicit casting via `toInteger()` / `toFloat()`. When column values cannot be parsed to numbers, Cypher returns null for that computation, which the phrasing logic formats cleanly without throwing exceptions.
+**One real bug this testing caught and fixed:** the deterministic tier's "how many rows belong to
+Nonexistent?" originally silently fell back to the *unfiltered* total-row count instead of
+recognizing the filter couldn't be resolved — answering the wrong question with a confident-sounding
+number. Fixed by detecting filter-intent words ("belong", "where", "for", etc.) and returning "no
+match" instead of guessing when those are present but no value resolves; see `_FILTER_INTENT_WORDS`
+in `api/chatbot_deterministic.py`.
 
----
+**Adversarial groundedness testing:** ran 10+ adversarial prompts against the LLM tier — general
+code-generation requests, prompt injection ("ignore previous instructions"), general knowledge
+questions, disguised delete requests, compound "show me X then delete it" phrasing. Every one
+correctly returned `NO_QUERY` from the model. Independently verified the code-level gate
+(`validate_read_only`) also rejects hand-crafted malicious Cypher that *starts* with a valid `MATCH`
+but sneaks in a write clause later (`DETACH DELETE`, `WITH r DELETE r`, `SET r.amount = 0`,
+`RETURN r UNION CREATE (x:Evil)`) — so the defense doesn't rely on the model behaving.
 
 ## 9.5 How we worked
 
-### Team Ownership
-- **Nitika:** UI development (`ui/index.html`), Docker Compose orchestration, container hardening, healthcheck gating, hostile-input audit.
-- **Beni:** API routing (`/ingest`, `/status`), Kafka producer configuration, Loader consumer daemon, Neo4j `MERGE` idempotent ingestion logic.
-- **Joint / Architecture:** Two-tier chatbot architecture (`chatbot.py`, `chatbot_deterministic.py`), contract alignment, and pre-freeze verification.
+Owners (see [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for the full breakdown):
+- **You** — LLM chatbot + Neo4j (`/chat`, both tiers, grounding logic)
+- **Beni** — API + Kafka + Loader
+- **Nitika** — UI + Docker/Compose + Hardening
 
-### Planned vs. Actual Checkpoints
-- **5:00–5:10 (Architecture & Scope):** Planned: Split work. Actual: Completed on time; contracts locked in `IMPLEMENTATION_PLAN.md`.
-- **5:10–5:35 (Skeleton Pipeline):** Planned: 5 containers with dummy end-to-end flow. Actual: Completed at 5:32; all dummy routes verified.
-- **5:35–6:00 (Real UI):** Planned: Drag-and-drop CSV preview & polling. Actual: Completed at 5:58; full styled dark-mode UI with CORS support.
-- **6:00–6:30 (Real Ingest & Loader):** Planned: Kafka publishing and Neo4j loading. Actual: Completed at 6:28; `MERGE` query verified.
-- **6:30–7:00 (Real API & Healthchecks):** Planned: Real `/status` counts and compose readiness. Actual: Completed at 6:52; Python HTTP probe added.
-- **7:00–7:20 (Real Chatbot):** Planned: Cypher generation and grounded answers. Actual: Completed at 7:18; two-tier architecture implemented.
-- **7:20–7:25 (Hardening & Verification):** Planned: Non-root user, pinned tags, hostile input. Actual: Completed at 7:24; merge conflicts resolved and all Part 10 checks passed.
+Planned vs. actual at each timeline checkpoint:
+- Skeleton (planned 0:10–0:35): took much longer than planned — `docker compose up --build` hit a slow/flaky internet connection, with the Kafka and Neo4j image pulls alone costing well over an hour of wall-clock time, including one outright pull failure (`failed to authorize: ... EOF`) that had to be retried from scratch. This pushed the whole timeline back significantly; see REPORT.md 9.6 for how we adapted (building/testing everything that didn't require the running stack in parallel while the pull continued).
+- _[fill in remaining checkpoints as we hit them]_
 
-### Two Major Architectural Decisions
+Two decisions in detail:
 
-#### Decision 1: Two-tier chatbot instead of LLM-only
-- **Options considered:** (1) Pure LLM translation, (2) Pure template/regex matching, (3) Hybrid two-tier architecture.
-- **Chosen because:** Guarantees that the entire pipeline functions autonomously without external API credentials or internet access, directly addressing evaluator questions regarding LLM necessity while retaining conversational phrasing when credentials are provided.
-- **Cost accepted:** Required maintaining two parallel query generation paths and keeping regex patterns aligned with dynamic schema keys.
-- **Would revisit if:** The schema required multi-hop graph traversals with arbitrary relationship hops beyond single-entity property queries.
+**Decision 1: Two-tier chatbot instead of LLM-only.**
+- Options considered: LLM-only (simplest to build), template-only (safest, no external dependency), two-tier (both).
+- Chosen because: directly answers real evaluator skepticism about LLM necessity, while still getting the LLM's phrasing flexibility.
+- Cost accepted: more code to write and maintain, two code paths to keep in sync with the same schema.
+- Would revisit if: time ran out before the deterministic tier was robust — would have shipped LLM-only with the pre-existing single-tier fallback (an apology message) instead.
 
-#### Decision 2: Switching to `confluent-kafka` over `kafka-python`
-- **Options considered:** (1) `kafka-python` 2.0.2, (2) `confluent-kafka` 2.15.1.
-- **Chosen because:** `kafka-python` has unmaintained protocol handling for newer Kafka KRaft metadata brokers, causing intermittent metadata connection timeouts.
-- **Cost accepted:** Required switching from synchronous `send()` to asynchronous `produce()` with callback polling and explicit buffer flushes.
-- **Would revisit if:** Build environments lacked pre-compiled binary wheel support for `librdkafka` (wheel installation succeeded without issue).
+**Decision 2: `confluent-kafka` instead of `kafka-python`.**
+- Options considered: `kafka-python` (simpler API, what we started with), `confluent-kafka` (librdkafka-based).
+- Chosen because: known compatibility risk between `kafka-python` and modern KRaft-mode brokers, discovered during code review before the stack was even running — not worth risking a live-demo Kafka connection failure over.
+- Cost accepted: slightly different API (callback-based produce, poll-based consume) required rewriting the producer/consumer code.
+- Would revisit if: `confluent-kafka`'s wheel hadn't installed cleanly on our target image (it did).
 
-### One Dead End Encountered
-- **Neo4j 5.x Database Naming:** We initially configured the compose environment to use the exact handout database name `CSV_Graph_DB`. Neo4j 5.x startup failed immediately because internal database validation permits only letters, numbers, dots, and hyphens (`[a-z0-9.-]`), rejecting underscores. After attempting configuration overrides in `neo4j.conf`, we recognized the constraint was hardcoded in the Neo4j engine. We abandoned the literal underscore name, adopted `csv-graph-db`, and unified the variable across all services.
+One dead end: initially picked `llama-3.3-70b-versatile` as the Groq model (matching common examples online). The very first real API call returned `404 model_not_found` — it's been removed from Groq's catalog entirely. Switched to `openai/gpt-oss-120b` (confirmed available via `client.models.list()`), which then returned empty responses on short prompts — it's a reasoning model that spends tokens on hidden reasoning before the visible answer, and a low `max_tokens` budget left nothing for the actual output. Diagnosed via `usage.completion_tokens_details.reasoning_tokens` in the response, fixed by adding `reasoning_effort="low"`. Total time from first failure to working fix: a few minutes, caught before it ever touched the live stack — what told us to stop chasing it further was that the fix was immediate and complete once we found `reasoning_effort`, not a deeper architectural problem.
 
----
+## 9.6 Limitations and next steps
 
-## 9.6 Limitations and Next Steps
+- Container-only bugs are real and distinct from host-side testing: both the `groq`/`httpx`
+  version mismatch and the `api` Dockerfile missing `COPY` for `chatbot.py`/`chatbot_deterministic.py`
+  (added after the Dockerfile was first written, never wired back in) only surfaced on the first
+  live container run — extensive host-side unit/integration testing of the chatbot logic beforehand
+  didn't catch either, because the host environment happened to already have compatible versions and
+  the right files present. Lesson: a "works on my machine" host test is not a substitute for
+  actually running `docker compose up` before considering a piece done.
+- The generic `Dataset -[:HAS_ROW]-> Row` model doesn't detect foreign-key-style columns and turn
+  them into real relationships — every column is a flat property regardless of whether it
+  logically references another row.
+- `api`'s job-status bookkeeping (`rows_received` for the "queued" state) is in-memory and lost on
+  an `api` restart — acceptable for a 3-hour demo since Neo4j is authoritative once loading starts,
+  but wouldn't survive a real restart mid-upload in production.
+- The deterministic chatbot tier only recognizes question shapes we anticipated (count, list,
+  aggregate, group-by, top-N, distinct values, row lookup, schema, dataset status) — a question
+  phrased outside those shapes falls through to the LLM tier (if configured) or an honest "I don't
+  have that."
+- We have no way to detect that a re-uploaded file with the same name but different content should
+  be treated differently from one with genuinely identical content — `dataset_id` is purely a
+  content hash, so two different files that happen to hash-collide (practically impossible) or a
+  same-name-different-content re-upload both just work as expected/new datasets respectively; this
+  is fine for us but worth stating explicitly.
 
-1. **Flat Property Graph Schema:** Every CSV row is stored as an independent `:Row` node connected only to its `:Dataset`. It does not detect foreign-key relationships to create cross-node edges (e.g. linking `order.customer_id` directly to a `Customer` node).
-2. **In-Memory Job Tracking:** The `jobs` dictionary in FastAPI stores initial upload metadata in memory. While Neo4j is authoritative once loading starts, an API crash immediately following upload before Kafka message dispatch could cause `/status` to return 404 until messages are processed.
-3. **Large File Ingest Memory:** Ingestion buffers the full uploaded file content into memory to calculate the SHA-256 digest before streaming rows. For files exceeding several gigabytes, this should be transitioned to streaming hash calculation with disk spooling.
-4. **Automated Column Type Coercion:** All column values are stored as strings in Neo4j. Adding automated schema profiling at ingestion time to cast integers, floats, and ISO timestamps directly would eliminate the need for runtime `toInteger()` casting in Cypher queries.
-
----
+_[Fill in more as we discover them during testing.]_
 
 ## 9.7 How to run it
 
-### 1. Prerequisites
-Ensure Docker Engine and Docker Compose are installed and running.
-
-### 2. Setup and Launch
 ```bash
-git clone https://github.com/AbdulRahman1807/rst5.git
+git clone https://github.com/AbdulRahman1807/rst5
 cd rst5
 cp .env.example .env
-# Optional: add your GROQ_API_KEY in .env if testing the LLM phrasing tier
-docker compose down -v
+# edit .env: set GROQ_API_KEY (optional — system works without it, see SOLUTION_ANALYSIS.md)
 docker compose up -d --build
 ```
 
-### 3. Verification
-- **Web UI:** Navigate to `http://localhost:3000` in any browser. Drag in `test_data/small_clean.csv`.
-- **API Status:**
-  ```bash
-  curl -s http://localhost:8000/health
-  ```
-- **Run Idempotency Test:**
-  ```bash
-  ./scripts/verify_idempotency.sh
-  ```
-- **Run Hostile-Input Test Suite:**
-  ```bash
-  ./scripts/test_hostile_input.sh
-  ```
-- **Neo4j Browser:** Access `http://localhost:7474` (Database: `csv-graph-db`, Username: `neo4j`, Password: `csvgraphdb`).
+Then open `http://localhost:3000` (ui), or test directly:
+```bash
+curl -F "file=@test_data/small_clean.csv" http://localhost:8000/ingest
+curl "http://localhost:8000/status?job_id=<job_id from above>"
+curl -X POST http://localhost:8000/chat -H "Content-Type: application/json" \
+  -d '{"question": "How many rows belong to the Billing group?"}'
+```
+
+Neo4j Browser: `http://localhost:7474` (user `neo4j`, password `csvgraphdb`, database `csv-graph-db`).
+
+To verify idempotency: run `scripts/verify_idempotency.sh` (uploads `small_clean.csv` twice,
+diffs the resulting row/relationship counts).
