@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import csv
 import hashlib
 import io
@@ -5,14 +7,18 @@ import json
 import logging
 import os
 import time
+from typing import Optional
 
-from confluent_kafka import Producer, KafkaException
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from confluent_kafka import KafkaException, Producer
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from neo4j import GraphDatabase
-from neo4j.exceptions import ServiceUnavailable, AuthError
+from neo4j.exceptions import AuthError, ServiceUnavailable
 
-import chatbot
+try:
+    import chatbot
+except ImportError:
+    from api import chatbot
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("api")
@@ -20,8 +26,9 @@ log = logging.getLogger("api")
 KAFKA_BROKERS = os.getenv("KAFKA_BROKERS", "kafka:9092")
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.environ["NEO4J_PASSWORD"]
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "csvgraphdb")
 NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "csv-graph-db")
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 KAFKA_TOPIC = "csv-rows"
 
@@ -38,7 +45,7 @@ app.add_middleware(
 # Lost on restart; acceptable per IMPLEMENTATION_PLAN.md (Neo4j is authoritative once loading starts).
 jobs: dict[str, dict] = {}
 
-_producer: Producer | None = None
+_producer: Optional[Producer] = None
 _driver = None
 
 
@@ -172,7 +179,7 @@ def status(job_id: str):
 
 
 @app.post("/chat")
-def chat(payload: dict = None):
+def chat(payload: Optional[dict] = None):
     if payload is None:
         payload = {}
     question = payload.get("question", "")

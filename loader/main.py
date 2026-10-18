@@ -5,7 +5,7 @@ import time
 
 from confluent_kafka import Consumer, KafkaException
 from neo4j import GraphDatabase
-from neo4j.exceptions import ServiceUnavailable, AuthError
+from neo4j.exceptions import AuthError, ServiceUnavailable
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("loader")
@@ -13,7 +13,7 @@ log = logging.getLogger("loader")
 KAFKA_BROKERS = os.getenv("KAFKA_BROKERS", "kafka:9092")
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.environ["NEO4J_PASSWORD"]
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "csvgraphdb")
 NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "csv-graph-db")
 KAFKA_TOPIC = "csv-rows"
 
@@ -57,12 +57,14 @@ SET d.status = CASE WHEN d.rows_loaded + d.rows_failed >= d.rows_total THEN 'com
 
 
 def connect_kafka() -> Consumer:
-    consumer = Consumer({
-        "bootstrap.servers": KAFKA_BROKERS,
-        "group.id": "loader",
-        "auto.offset.reset": "earliest",
-        "enable.auto.commit": True,
-    })
+    consumer = Consumer(
+        {
+            "bootstrap.servers": KAFKA_BROKERS,
+            "group.id": "loader",
+            "auto.offset.reset": "earliest",
+            "enable.auto.commit": True,
+        }
+    )
     while True:
         try:
             consumer.list_topics(timeout=3)  # forces a broker round-trip; raises if not reachable yet
@@ -101,7 +103,10 @@ def main():
             log.error("kafka consume error: %s", kmsg.error())
             continue
 
-        msg = json.loads(kmsg.value().decode("utf-8"))
+        val = kmsg.value()
+        if val is None:
+            continue
+        msg = json.loads(val.decode("utf-8"))
         dataset_id = msg["dataset_id"]
         row_index = msg["row_index"]
         try:

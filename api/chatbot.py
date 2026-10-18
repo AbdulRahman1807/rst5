@@ -1,10 +1,16 @@
+from __future__ import annotations
+
 import logging
 import os
 import re
 
 from groq import Groq
 
-import chatbot_deterministic
+try:
+    import chatbot_deterministic
+except ImportError:
+    from api import chatbot_deterministic
+
 
 log = logging.getLogger("chatbot")
 
@@ -84,9 +90,7 @@ def get_client() -> Groq:
 def build_schema_context(driver, database: str) -> tuple[list[str], dict]:
     """Look at one real Row node to learn the current CSV's columns, for prompt grounding."""
     with driver.session(database=database) as session:
-        record = session.run(
-            "MATCH (r:Row) RETURN keys(r) AS keys, r AS row LIMIT 1"
-        ).single()
+        record = session.run("MATCH (r:Row) RETURN keys(r) AS keys, r AS row LIMIT 1").single()
     if record is None:
         return [], {}
     columns = [k for k in record["keys"] if k not in ("row_index", "dataset_id")]
@@ -113,7 +117,7 @@ def generate_cypher(question: str, columns: list[str], sample_row: dict) -> str:
         reasoning_effort="low",
         timeout=8,
     )
-    raw = resp.choices[0].message.content.strip()
+    raw = (resp.choices[0].message.content or "").strip()
     # Strip markdown code fences if the model added them despite instructions — formatting only,
     # never a semantic rewrite of the query (see IMPLEMENTATION_PLAN.md "reject, don't strip").
     raw = re.sub(r"^```(?:cypher)?\s*|\s*```$", "", raw, flags=re.IGNORECASE).strip()
@@ -162,7 +166,7 @@ def phrase_answer(question: str, cypher: str, result: list[dict]) -> str:
         reasoning_effort="low",
         timeout=8,
     )
-    return resp.choices[0].message.content.strip()
+    return (resp.choices[0].message.content or "").strip()
 
 
 def _groq_configured() -> bool:
@@ -206,11 +210,21 @@ def answer_question(driver, database: str, question: str) -> dict:
     strictly an enhancement for handling more phrasings, not a requirement. See
     SOLUTION_ANALYSIS.md for why."""
     if not question or not question.strip():
-        return {"answer": "Ask me something about the uploaded data.", "cypher": None, "result": None, "grounded": False}
+        return {
+            "answer": "Ask me something about the uploaded data.",
+            "cypher": None,
+            "result": None,
+            "grounded": False,
+        }
 
     try:
         if not has_any_data(driver, database):
-            return {"answer": "I don't have any data yet — upload a CSV first.", "cypher": None, "result": None, "grounded": False}
+            return {
+                "answer": "I don't have any data yet — upload a CSV first.",
+                "cypher": None,
+                "result": None,
+                "grounded": False,
+            }
 
         columns, sample_row = build_schema_context(driver, database)
 
@@ -228,4 +242,9 @@ def answer_question(driver, database: str, question: str) -> dict:
 
     except Exception as e:
         log.error("unexpected /chat failure: %s", e)
-        return {"answer": "I couldn't process that right now — try again in a moment.", "cypher": None, "result": None, "grounded": False}
+        return {
+            "answer": "I couldn't process that right now — try again in a moment.",
+            "cypher": None,
+            "result": None,
+            "grounded": False,
+        }
