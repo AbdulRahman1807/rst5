@@ -1,6 +1,4 @@
-import csv
 import hashlib
-import io
 import json
 import logging
 import os
@@ -16,6 +14,11 @@ try:
     import chatbot
 except ImportError:
     from api import chatbot
+
+try:
+    from ingest_validation import CSVValidationError, parse_and_validate_csv
+except ImportError:
+    from api.ingest_validation import CSVValidationError, parse_and_validate_csv
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("api")
@@ -87,27 +90,15 @@ def health():
 @app.post("/ingest", status_code=202)
 async def ingest(file: UploadFile = File(...)):
     raw = await file.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="empty file")
     if not (file.filename or "").lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="file must be a .csv")
 
-    dataset_id = hashlib.sha256(raw).hexdigest()
-
     try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="file is not valid UTF-8 text/CSV")
+        rows = parse_and_validate_csv(raw)
+    except CSVValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-    reader = csv.DictReader(io.StringIO(text))
-    rows = list(reader)
-    if reader.fieldnames is None:
-        raise HTTPException(status_code=400, detail="not a valid CSV (no header row)")
-    if any(f is None or not f.strip() for f in reader.fieldnames):
-        raise HTTPException(status_code=400, detail="not a valid CSV (malformed header row)")
-    if not rows:
-        raise HTTPException(status_code=400, detail="CSV has a header but zero data rows")
-
+    dataset_id = hashlib.sha256(raw).hexdigest()
     rows_total = len(rows)
     uploaded_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 

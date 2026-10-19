@@ -21,14 +21,11 @@ GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
 _client: Groq | None = None
 
-# Defense in depth #1: keyword reject list. Whole-word, case-insensitive.
-_WRITE_KEYWORDS = re.compile(
-    r"\b(CREATE|MERGE|DELETE|SET|REMOVE|DROP|DETACH|FOREACH|LOAD\s+CSV|CALL\s+db\.)\b",
-    re.IGNORECASE,
-)
-_READ_START = re.compile(r"^\s*(MATCH|OPTIONAL MATCH|WITH|UNWIND|RETURN)\b", re.IGNORECASE)
+try:
+    from guardrail import NO_QUERY, validate_read_only
+except ImportError:
+    from api.guardrail import NO_QUERY, validate_read_only
 
-NO_QUERY = "NO_QUERY"
 
 SYSTEM_PROMPT = """You translate a user's plain-English question into a single read-only Cypher query \
 for a Neo4j graph with exactly this schema:
@@ -121,15 +118,6 @@ def generate_cypher(question: str, columns: list[str], sample_row: dict) -> str:
     raw = re.sub(r"^```(?:cypher)?\s*|\s*```$", "", raw, flags=re.IGNORECASE).strip()
     return raw
 
-
-def validate_read_only(cypher: str) -> bool:
-    if not cypher or cypher == NO_QUERY:
-        return False
-    if _WRITE_KEYWORDS.search(cypher):
-        return False
-    if not _READ_START.match(cypher):
-        return False
-    return True
 
 
 # Hard cap regardless of what the LLM's query does — a forgotten LIMIT on a "list all rows"
