@@ -24,8 +24,6 @@ Intents supported (tried in order, most specific first):
  12. dataset/status meta          "what's the status" / "how many datasets"
 """
 
-from __future__ import annotations
-
 import logging
 import re
 

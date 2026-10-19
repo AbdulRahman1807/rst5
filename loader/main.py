@@ -13,7 +13,7 @@ log = logging.getLogger("loader")
 KAFKA_BROKERS = os.getenv("KAFKA_BROKERS", "kafka:9092")
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "csvgraphdb")
+NEO4J_PASSWORD = os.environ["NEO4J_PASSWORD"]
 NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "csv-graph-db")
 KAFKA_TOPIC = "csv-rows"
 

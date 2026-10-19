@@ -27,7 +27,7 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
       interval: 5s
-      timeout: 5s
+      timeout: 10s
       retries: 20
       start_period: 20s
 
@@ -65,7 +65,8 @@ services:
     networks:
       - pipeline-net
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
+
     environment:
       KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
       NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
@@ -112,7 +113,8 @@ services:
     networks:
       - pipeline-net
     ports:
-      - "3000:8080"
+      - "${UI_PORT:-3000}:8080"
+
     volumes:
       - ./ui:/usr/share/nginx/html:ro
     depends_on:
