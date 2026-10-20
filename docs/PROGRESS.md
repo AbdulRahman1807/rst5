@@ -123,34 +123,83 @@ Non-ASCII characters or zero-width joiners bypass ASCII word-boundary `\b` regex
 
 ---
 
-## 5. Phase 1 Step 3 — Unit Testing, Spy Verification & Loader Coverage
+## 5. Phase 1 Step 3 — Unit Testing, Spy Verification, Loader Coverage & Step 3 Cleanup
 
-Implemented in-memory unit tests across `tests/test_deterministic.py` (51 tests) and `tests/test_loader.py` (8 tests) with zero Docker/network dependencies.
+Implemented in-memory unit tests across `tests/test_deterministic.py` and `tests/test_loader.py` with zero Docker/network dependencies, verified with `pytest-socket` and with the Docker stack completely stopped.
 
-### A. Per-Module Statement Coverage
-| Module | Total Stmts | Missed | Coverage | Uncovered Lines & Rationale |
-|---|---|---|---|---|
-| `api/guardrail.py` | 13 | 0 | **100%** | None. All branches covered. |
-| `api/chatbot_deterministic.py` | 217 | 2 | **99%** | Lines 109–110 (`except ValueError: return None` in `_extract_number`): unreachable defensive guard because `_NUMBER` regex `[-+]?\$?\d[\d,]*(?:\.\d+)?` guarantees parseable floats. |
-| `loader/main.py` | 71 | 1 | **99%** | Line 146 (`main()` under `if __name__ == '__main__':`): CLI entrypoint guard. |
+### A. Unit Suite Hermeticity & Import-Time Work
+- **The ~26s Baseline Run Time Explained**:
+  In the initial test run, `tests/test_baseline.py::test_imports` took ~19s. Investigation with `--durations` and code inspection revealed that production modules (`api/main.py`, `api/chatbot.py`, `loader/main.py`) execute **zero network work, zero Kafka connections, and zero Neo4j driver instantiations at import time**. All drivers and producers are initialized lazily inside helper functions (`get_driver()`, `get_producer()`, `main()`).
+  The delay on macOS was entirely cold-start C-extension dynamic linking (`confluent_kafka._model`, `neo4j._sync.work.workspace`, `pydantic_core`). Once cached in memory, subsequent imports and test runs complete in **~1.5 seconds**.
+- **Hermeticity Verification (pytest-socket & Stack Stopped)**:
+  1. Installed `pytest-socket==0.7.0` (pinned in `requirements-dev.txt`).
+  2. Executed unit suite with `--disable-socket`: **102 passed, 19 xfailed in 7.20s** (zero socket calls allowed).
+  3. Stopped all Docker containers via `docker compose stop` (`docker compose ps` confirmed zero running containers).
+  4. Executed `make test` against the stopped stack: **102 passed, 19 xfailed in 5.75s**.
 
-### B. "No User Text in Cypher" Spy Test Verification
-A dedicated spy driver (`SpyDriver` / `SpySession`) intercepts every query string and parameter dictionary dispatched by `chatbot_deterministic.py`.
-- **Hostile Inputs Tested**: Column names containing semicolons, SQL comments, backticks, quotes, braces, unicode, and emojis (e.g. `department; DROP (n)`, `` `evil`col` ``); and values containing SQL/Cypher injection payloads (e.g. `'; DROP ALL NODES; --`, `admin' OR '1'='1`).
-- **Assertion**:
-  1. User values NEVER appear anywhere in the Cypher query string; they are strictly bound to parameters (e.g., `$value`, `$n`, `$idx`).
-  2. Column names NEVER appear unquoted; they appear strictly escaped via `_quote_ident` (doubled backticks inside outer backticks).
-- **Result**: PASSED across all deterministic intents. Safe by construction.
+### B. Standardized Module Import Paths & Coverage (with Branch Coverage)
+- **Standardized Import Paths**: All tests consistently import via `from api.<module> import ...` and `from loader.<module> import ...`, aligning with `make test`'s `--cov=api --cov=loader`.
+- **Branch Coverage (`--cov-branch`) Results**:
+| Module | Stmts | Miss | Branch | BrPart | Cover | Missing Lines / Uncovered Branches |
+|---|---|---|---|---|---|---|
+| `api/chatbot_deterministic.py` | 217 | 2 | 84 | 3 | **98%** | 109–110 (unreachable `ValueError`), 145->143, 272->284, 323->334 |
+| `api/guardrail.py` | 13 | 0 | 6 | 0 | **100%** | None. All statements & branches covered. |
+| `loader/main.py` | 71 | 1 | 8 | 1 | **97%** | 146 (`if __name__ == '__main__':`) |
+| **Subtotal (3 Unit-Tested Modules)** | **301** | **3** | **98** | **4** | **98%** | Target unit surface thoroughly exercised |
+| `api/ingest_validation.py` | 20 | 15 | 8 | 0 | **18%** | Step 4 target module (`parse_and_validate_csv`) |
+| `api/chatbot.py` (LLM tier) | 97 | 73 | 20 | 0 | **21%** | Untrusted Groq LLM path (exercised in e2e/eval) |
+| `api/main.py` (FastAPI routes) | 103 | 65 | 18 | 0 | **31%** | Endpoints (exercised in Step 5 e2e) |
+| **OVERALL REPO TOTAL** | **521** | **156** | **144** | **4** | **69%** | Repo-wide line + branch coverage |
 
-### C. Loader Message Handling & Known Bug Specification (Strict Xfails)
-- **Queries Sent Verified**:
-  - Happy path message dispatches `MERGE_ROW` with exact parameters (`dataset_id`, `filename`, `uploaded_at`, `row_index`, `rows_total`, `row`).
-  - Write exception on `MERGE_ROW` dispatches `MARK_FAILED` with exact parameters (`dataset_id`, `row_index`, `filename`, `uploaded_at`, `rows_total`).
-  - Non-message events (poll timeouts, Kafka errors, empty payload) are skipped without calling the database.
-- **Important Semantic Caveat**:
-  *Fake-session unit tests verify QUERY AND PARAMS SENT ONLY.* A mock driver cannot evaluate Neo4j Cypher runtime behavior (such as conditional `rows_loaded` increment via `ON CREATE/ON MATCH + FOREACH` or `rows_failed` increment on `FailedRow` markers). Semantic verification of the idempotency counters is strictly deferred to Phase 1 Step 6 using Testcontainers on live Neo4j.
-- **Gaps Identified & Marked `xfail(strict=True)`** (No production edits in Step 3):
-  1. `test_loader_survives_malformed_json`: In `loader/main.py`, `msg = json.loads(val.decode("utf-8"))` at line 109 is located outside any `try/except` block. A non-JSON message crashes the consumer loop with unhandled `json.JSONDecodeError` rather than logging and skipping/routing to DLQ.
-  2. `test_loader_survives_missing_required_fields`: In `loader/main.py`, `msg["dataset_id"]` and `msg["row_index"]` at lines 110–111 are outside the `try/except` block. Messages missing these keys raise unhandled `KeyError` and crash the consumer process.
+- **Proof of Unreachable Lines 109–110 in `api/chatbot_deterministic.py`**:
+  `_NUMBER = re.compile(r"[-+]?\$?\d[\d,]*(?:\.\d+)?")`.
+  In `_extract_number(question)`:
+  ```python
+  m = _NUMBER.search(question)
+  if not m:
+      return None
+  try:
+      return float(m.group(0).replace("$", "").replace(",", ""))
+  except ValueError:
+      return None
+  ```
+  *Analytical Proof*:
+  1. `m.group(0)` matches `r"[-+]?\$?\d[\d,]*(?:\.\d+)?"`.
+  2. `.replace("$", "").replace(",", "")` removes all `$` and `,` characters.
+  3. The resulting string is strictly of the form `^[-+]?\d+(?:\.\d+)?$`: an optional single leading sign `+` or `-`, at least one digit `\d+`, and an optional fractional part `\.\d+`.
+  4. In Python, every string conforming to this pattern is guaranteed to be parseable as a valid base-10 `float`. A lone `-` or `+` cannot match `_NUMBER` because `\d` is strictly required before any subsequent characters.
+  5. Thus, `float(...)` will never raise `ValueError`. Lines 109–110 are mathematically unreachable defensive dead code. Verified via Hypothesis (`test_extract_number_never_raises`).
+
+### C. "No User Text in Cypher" Spy Test Verification (Strengthened)
+- **Scope**: Covers the **deterministic tier only**. The LLM tier's Cypher is the untrusted path, guarded by `api/guardrail.py` (see the 17 known xfail gaps).
+- **Strengthened Invariants**:
+  1. **Non-Vacuous Check**: Asserted that at least one recorded call executed a parameterized query using `$value` when value filtering was expected (`assert value_param_found is True`).
+  2. **Canary Tokens**: Replaced short generic hostile strings with unique canary tokens (`val_x9f3_...`, `col_x9f3_...`) to guarantee zero substring collisions with Cypher keywords (`MATCH`, `Row`, `LIMIT`).
+  3. **Exact Quoting Form**: Asserted that the exact output of `_quote_ident(col)` is present in the final query string and raw unquoted column text never leaks outside backticks.
+  4. **Hypothesis Property Test**: Added `test_no_user_text_in_cypher_hypothesis` testing arbitrary text inputs, asserting no user value ever appears in query text.
+
+### D. Intent Mapping: 12 Logical Intents in Source Mapped to Tests
+The `chatbot_deterministic.py` docstring lists 12 logical user intents, implemented across 9 intent functions in `_INTENTS`:
+1. **Row lookup** (`_row_lookup`): `test_row_lookup_found`, `test_row_lookup_not_found`, `test_row_lookup_no_pattern`
+2. **Distinct values** (`_distinct_values_intent`): `test_distinct_values_intent`, `test_distinct_values_intent_no_match`
+3. **Group-by count** (`_groupby_count_intent`): `test_groupby_count_intent`, `test_groupby_count_intent_no_match`
+4. **Top-N** (`_topn_intent`): `test_topn_intent_desc`, `test_topn_intent_asc`, `test_topn_intent_cap`, `test_topn_intent_invalid_cap`
+5. **Aggregate** (`_aggregate_intent`): `test_aggregate_intent_unfiltered`, `test_aggregate_intent_filtered`, `test_aggregate_intent_multiple_matched_columns`, `test_aggregate_intent_no_column_matched`, `test_aggregate_intent_unresolvable_filter_intent`
+6. **Count with comparison** (`_count_intent`): `test_count_intent_comparison`
+7. **Count with equality filter** (`_count_intent`): `test_count_intent_equality`
+8. **Total count** (`_count_intent`): `test_count_intent_total`, `test_count_intent_unresolvable_filter_intent`
+9. **List with comparison** (`_list_intent`): `test_list_intent_comparison`
+10. **List with equality** (`_list_intent`): `test_list_intent_equality`, `test_list_intent_matched_column_but_no_filter`
+11. **Schema question** (`_schema_intent`): `test_schema_intent`
+12. **Dataset status** (`_dataset_status_intent`): `test_dataset_status_intent_singular_and_plural`
+
+### E. Loader Message Handling & Poison-Pill Exposure Analysis
+- **Auto-Commit & Crash Loop Mechanics**:
+  `loader/main.py` initializes the Kafka consumer with `"enable.auto.commit": True`. If a malformed message (non-JSON payload) is polled at partition offset $N$, `msg = json.loads(val.decode("utf-8"))` at line 109 raises an unhandled `json.JSONDecodeError` outside any `try/except` block.
+  Because the consumer process crashes immediately before offset $N$ is auto-committed, restarting the container causes the consumer to re-read from the last committed offset ($N-1$), re-poll offset $N$, and crash again in an infinite poison-pill loop.
+- **Exposure Analysis**:
+  **Low exposure today** because the only producer in the architecture is `api/main.py`, which serializes row dictionaries into valid JSON using Python's standard `json.dumps()`. Malformed messages could only enter the topic via manual developer debugging, out-of-band Kafka tooling, or future external producers.
+- **Target Milestone for Fix**:
+  Relabeled the strict xfails in `tests/test_loader.py` to `reason="fix in Phase 5: DLQ / poison pill: ..."`. The correct architectural remediation is a dead-letter topic (DLQ) in Phase 5, rather than a premature patch in Phase 2 (which is dedicated to guardrails).
 
 
