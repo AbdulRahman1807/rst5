@@ -13,14 +13,13 @@ This document tracks phase progression, architectural decisions, verified baseli
 | **Phase 1: Step 1** | Behavior-preserving extraction: `guardrail.py` & `ingest_validation.py` | **COMPLETED** | `a553342` |
 | **Phase 1: Step 2** | Table-driven guardrail test suite (`tests/test_guardrail.py`) with strict `xfail` gap analysis | **COMPLETED** | 39 passed, 17 xfailed (`strict=True`), 100% guardrail coverage |
 | **Phase 1: Step 3** | Unit tests for deterministic chatbot & loader with mock Neo4j | **COMPLETED** | 57 passed, 2 xfailed (`strict=True`), 99% chatbot / 99% loader coverage |
-| **Phase 1: Step 4** | Hypothesis property-based testing on `parse_and_validate_csv` | **COMPLETED** | 10 passed, 12 xfailed (`strict=True`), 93% `ingest_validation.py` coverage |
-
+| **Phase 1: Step 4** | CSV Ingestion & Validation Hardening (Option B: per-row routing, defense-in-depth loader) | **COMPLETED** | 136 passed, 19 xfailed (`strict=True`, `raises=...`), 97% `ingest_validation.py` coverage |
 | **Phase 1: Step 5** | Port bash scripts (`verify_idempotency`, `test_hostile_input`) to pytest (`@pytest.mark.e2e`) | Pending | — |
 | **Phase 1: Step 6** | Testcontainers integration (Neo4j idempotency replay, Kafka roundtrip) | Pending | — |
 | **Phase 2** | Guardrail rewrite (clause/function allowlist, code-enforced LIMIT, AST/tokenizer) | Pending | — |
 | **Phase 3** | Hybrid retrieval & local embeddings (`fastembed` / `bge-small-en-v1.5`) | Pending | — |
 | **Phase 4** | Evaluation benchmark & pandas-generated golden dataset (50+ queries) | Pending | — |
-| **Phase 5** | Production hardening, Docker multi-stage builds, portfolio write-up | Pending | — |
+| **Phase 5** | Production hardening, DLQ, single-node row state model, portfolio write-up | Pending | — |
 
 ---
 
@@ -81,7 +80,7 @@ Results:
 
 ## 4. Known Issues & Gaps (Specification for Phase 2 Guardrail Rewrite)
 
-Executed table-driven test suite in `tests/test_guardrail.py` (56 total tests in suite: 39 passed, 17 strictly xfailed). Coverage on `api/guardrail.py` is **100%**.
+Executed table-driven test suite in `tests/test_guardrail.py` (56 total tests in suite: 39 passed, 17 strictly xfailed with explicit `raises=AssertionError`). Coverage on `api/guardrail.py` is **100%**.
 
 The 17 strictly xfailed gaps collapse into four fundamental root causes. Note that while labelled "FAIL-OPEN" from a validator perspective, database-level protections (`session.execute_read()`) mitigate most against actual data corruption:
 
@@ -139,36 +138,6 @@ Implemented in-memory unit tests across `tests/test_deterministic.py` and `tests
 
 ### B. Standardized Module Import Paths & Coverage (with Branch Coverage)
 - **Standardized Import Paths**: All tests consistently import via `from api.<module> import ...` and `from loader.<module> import ...`, aligning with `make test`'s `--cov=api --cov=loader`.
-- **Branch Coverage (`--cov-branch`) Results**:
-| Module | Stmts | Miss | Branch | BrPart | Cover | Missing Lines / Uncovered Branches |
-|---|---|---|---|---|---|---|
-| `api/chatbot_deterministic.py` | 217 | 2 | 84 | 3 | **98%** | 109–110 (unreachable `ValueError`), 145->143, 272->284, 323->334 |
-| `api/guardrail.py` | 13 | 0 | 6 | 0 | **100%** | None. All statements & branches covered. |
-| `loader/main.py` | 71 | 1 | 8 | 1 | **97%** | 146 (`if __name__ == '__main__':`) |
-| **Subtotal (3 Unit-Tested Modules)** | **301** | **3** | **98** | **4** | **98%** | Target unit surface thoroughly exercised |
-| `api/ingest_validation.py` | 20 | 15 | 8 | 0 | **18%** | Step 4 target module (`parse_and_validate_csv`) |
-| `api/chatbot.py` (LLM tier) | 97 | 73 | 20 | 0 | **21%** | Untrusted Groq LLM path (exercised in e2e/eval) |
-| `api/main.py` (FastAPI routes) | 103 | 65 | 18 | 0 | **31%** | Endpoints (exercised in Step 5 e2e) |
-| **OVERALL REPO TOTAL** | **521** | **156** | **144** | **4** | **69%** | Repo-wide line + branch coverage |
-
-- **Proof of Unreachable Lines 109–110 in `api/chatbot_deterministic.py`**:
-  `_NUMBER = re.compile(r"[-+]?\$?\d[\d,]*(?:\.\d+)?")`.
-  In `_extract_number(question)`:
-  ```python
-  m = _NUMBER.search(question)
-  if not m:
-      return None
-  try:
-      return float(m.group(0).replace("$", "").replace(",", ""))
-  except ValueError:
-      return None
-  ```
-  *Analytical Proof*:
-  1. `m.group(0)` matches `r"[-+]?\$?\d[\d,]*(?:\.\d+)?"`.
-  2. `.replace("$", "").replace(",", "")` removes all `$` and `,` characters.
-  3. The resulting string is strictly of the form `^[-+]?\d+(?:\.\d+)?$`: an optional single leading sign `+` or `-`, at least one digit `\d+`, and an optional fractional part `\.\d+`.
-  4. In Python, every string conforming to this pattern is guaranteed to be parseable as a valid base-10 `float`. A lone `-` or `+` cannot match `_NUMBER` because `\d` is strictly required before any subsequent characters.
-  5. Thus, `float(...)` will never raise `ValueError`. Lines 109–110 are mathematically unreachable defensive dead code. Verified via Hypothesis (`test_extract_number_never_raises`).
 
 ### C. "No User Text in Cypher" Spy Test Verification (Strengthened)
 - **Scope**: Covers the **deterministic tier only**. The LLM tier's Cypher is the untrusted path, guarded by `api/guardrail.py` (see the 17 known xfail gaps).
@@ -194,64 +163,98 @@ The `chatbot_deterministic.py` docstring lists 12 logical user intents, implemen
 12. **Dataset status** (`_dataset_status_intent`): `test_dataset_status_intent_singular_and_plural`
 
 ### E. Loader Message Handling & Poison-Pill Exposure Analysis
-- **Auto-Commit & Crash Loop Mechanics**:
-  `loader/main.py` initializes the Kafka consumer with `"enable.auto.commit": True`. If a malformed message (non-JSON payload) is polled at partition offset $N$, `msg = json.loads(val.decode("utf-8"))` at line 109 raises an unhandled `json.JSONDecodeError` outside any `try/except` block.
-  Because the consumer process crashes immediately before offset $N$ is auto-committed, restarting the container causes the consumer to re-read from the last committed offset ($N-1$), re-poll offset $N$, and crash again in an infinite poison-pill loop.
+- **Crash Loop vs Discard Behavior (UNVERIFIED)**:
+  `loader/main.py` initializes the Kafka consumer with `"enable.auto.commit": True`. If a malformed message (non-JSON payload) is polled at partition offset $N$, `msg = json.loads(val.decode("utf-8"))` raises an unhandled `json.JSONDecodeError` outside any `try/except` block.
+  Whether the loader enters an infinite crash loop or skips/discards the poisoned offset depends on librdkafka's auto-commit mechanics and the container's shutdown path (`close()` commits stored offsets vs abrupt kill without commit). This behavior is **UNVERIFIED** on a running stack and depends on container orchestration. Both outcomes are undesirable:
+  - If it crash-loops, ingestion stops entirely for all datasets.
+  - If it discards/commits on shutdown, data is silently lost without an audit trail.
 - **Exposure Analysis**:
-  **Low exposure today** because the only producer in the architecture is `api/main.py`, which serializes row dictionaries into valid JSON using Python's standard `json.dumps()`. Malformed messages could only enter the topic via manual developer debugging, out-of-band Kafka tooling, or future external producers.
-- **Target Milestone for Fix**:
-  Relabeled the strict xfails in `tests/test_loader.py` to `reason="fix in Phase 5: DLQ / poison pill: ..."`. The correct architectural remediation is a dead-letter topic (DLQ) in Phase 5, rather than a premature patch in Phase 2 (which is dedicated to guardrails).
+  Low exposure today because the sole producer is `api/main.py`, which serializes validated row dictionaries via `json.dumps()`. Malformed messages could only enter the topic via out-of-band tooling.
+- **Target Milestone**:
+  Strict xfails in `tests/test_loader.py` are labeled with `raises=json.JSONDecodeError` and `raises=KeyError`. Remediation is scheduled for Phase 5 via a Dead-Letter Queue (DLQ).
 
 ---
 
-## 6. Phase 1 Step 4 — Hypothesis Property-Based Testing on CSV Ingestion (`parse_and_validate_csv`)
+## 6. Phase 1 Step 4 — Hypothesis Property-Based Testing & Edge Cases
 
-Implemented property-based fuzzing and adversarial edge-case testing in `tests/test_csv_hypothesis.py` (22 tests: 10 passed, 12 strictly xfailed).
-Branch coverage on `api/ingest_validation.py` increased from 18% to **93%** (20 stmts, 1 missed line 27 defensive check for `reader.fieldnames is None`, 8 branches, 1 partial branch).
+Implemented property-based tests in `tests/test_csv_hypothesis.py`.
 
-### A. Universal Invariants & Fuzzing Property
-- **Property Tested**: `parse_and_validate_csv(raw: bytes)` must strictly return `list[dict[str, str | None]]` or raise `CSVValidationError`. It must NEVER leak raw unhandled exceptions such as `_csv.Error`, `UnicodeDecodeError`, `KeyError`, or `ValueError`.
-- **Finding (`xfail(strict=True)`)**: `test_csv_hypothesis_only_csv_validation_error_or_rows`
-  Arbitrary binary fuzzing uncovers unhandled `_csv.Error` leaks:
-  1. Bare CR (`\r`) in unquoted fields (`b"a,b\n1,foo\rbar\n"`) crashes with `_csv.Error: new-line character seen in unquoted field - do you need to open the file with newline=''?`.
-  2. Oversized fields exceeding Python's default limit (131,072 bytes) crash with `_csv.Error: field larger than field limit (131072)`.
-  *Impact*: Because `api/main.py` only catches `CSVValidationError`, any unhandled `_csv.Error` causes FastAPI to return an unhandled `500 Internal Server Error` instead of a clean `400 Bad Request`.
+### A. Correction: Fuzzing Does NOT Leak `_csv.Error`
+- **Correction**: Earlier documentation asserted that fuzzing "leaks `_csv.Error`". Fuzzing **never leaked `_csv.Error`**. The earlier xfail was an artifact of the test itself: it omitted `try / except CSVValidationError: return`. When random binary inputs triggered legitimate validation errors, the test failed on the expected exception. Once wrapped in `try / except CSVValidationError`, all property tests pass cleanly. Python's `csv.reader` with `io.StringIO(text, newline="")` handles universal newlines safely.
 
 ### B. Encodings & Line Endings
-- **UTF-8 BOM Corruption (`xfail(strict=True)`)**: `test_csv_utf8_bom_stripped`
-  Payload `b"\xef\xbb\xbfname,age\nAlice,30\n"` is decoded with `"utf-8"` instead of `"utf-8-sig"`. The leading Byte Order Mark is preserved as `\ufeffname`, corrupting the first column header and downstream Cypher property mapping.
-- **Line Endings (PASSED)**: `test_csv_crlf_lf_mixed_endings_accepted` proves CRLF (`\r\n`), LF (`\n`), and mixed line endings are parsed identically into normalized row dictionaries.
-- **Quoted Newlines (PASSED)**: `test_csv_quoted_newlines_accepted` proves multi-line quoted fields preserve internal newlines accurately.
-- **Non-UTF-8 Sequences (PASSED)**: `test_csv_non_utf8_bytes_raises_validation_error` traps invalid byte sequences as `CSVValidationError("file is not valid UTF-8 text/CSV")`.
+- **UTF-8 BOM Stripped**: Handled via `utf-8-sig` decoding.
+- **Line Endings & Quoted Newlines**: CRLF, LF, mixed endings, and multi-line quoted cells parse correctly.
 
-### C. Structural Gaps (Ragged Rows, Huge Fields, NUL Bytes)
-- **Ragged Rows with Extra Fields (`xfail(strict=True)`)**: `test_csv_ragged_rows_extra_fields_rejected`
-  For rows with more columns than the header (e.g., `b"a,b\n1,2,3\n"`), Python's `csv.DictReader` assigns extra values to the key `None`: `{'a': '1', 'b': '2', None: ['3']}`.
-  *Impact*: Violates the function's return type signature (`list[dict[str, str | None]]`). When serialized via `json.dumps()`, `None` becomes `"null"`, injecting unexpected properties into the Neo4j node.
-- **Ragged Rows with Missing Fields (`xfail(strict=True)`)**: `test_csv_ragged_rows_short_rows_rejected`
-  For rows with fewer columns than the header (e.g., `b"a,b,c\n1,2\n"`), `csv.DictReader` silently fills missing fields with `None`: `{'a': '1', 'b': '2', 'c': None}` without validation or error.
-- **NUL Bytes (`xfail(strict=True)`)**: `test_csv_nul_byte_rejected`
-  NUL bytes (`\x00`) in headers or data rows are accepted by Python 3.11's CSV parser and enter dictionary keys/values unescaped.
+### C. Header Edge Cases & Loader Overwrite Analysis
+| Header Tested | Status | Architectural Impact & Resolution |
+|---|---|---|
+| `dataset_id` | Blocked (400) | **CRITICAL IDEMPOTENCY HOLE**: Rejected at header validation (`reserved column header name`). In addition, `loader/main.py` sets `r.dataset_id = $dataset_id` *after* `r += $row` for defense-in-depth. |
+| `row_index` | Blocked (400) | **ORDERING HOLE**: Rejected at header validation. In addition, `loader/main.py` sets `r.row_index = $row_index` *after* `r += $row`. |
+| `_new` | Blocked (400) | **LOW IMPACT**: Rejected at header validation. `_new` is an internal idempotency marker inspected during the merge transaction. `loader/main.py` sets `r._new = true` after `r += $row`. |
+| Empty / Duplicate Headers | Blocked (400) | Prevents silent data loss from DictReader key collisions. |
 
-### D. Header Edge Cases & Loader `SET r += $row` Overwrite Risk
-The loader executes the following Cypher query on ingest (`loader/main.py:30-32`):
-```cypher
-MERGE (r:Row {dataset_id: $dataset_id, row_index: $row_index})
-  ON CREATE SET r += $row, r._new = true
-  ON MATCH SET r._new = false
+---
+
+## 7. CSV Ingestion Architecture (Option B — Per-Row Routing)
+
+### A. Dataclass-Based Parsing Pipeline (`api/ingest_validation.py`)
+Replaced ad-hoc CSV parsing with a pure validation pipeline returning structured dataclasses:
+```python
+@dataclass(frozen=True)
+class ParsedRow:
+    index: int
+    row: dict[str, str | None]
+    failed: bool = False
+    reason: str | None = None
+    source_line: int | None = None
+
+@dataclass(frozen=True)
+class ParsedCSV:
+    headers: list[str]
+    rows: list[ParsedRow]
 ```
-Here, `$row` is the exact row dictionary emitted by `parse_and_validate_csv`.
 
-| Header Tested | Current Behavior | Loader Overwrite & Architecture Impact | Test Status |
-|---|---|---|---|
-| `dataset_id` | Accepted without error | **CRITICAL IDEMPOTENCY & ISOLATION HOLE**: `r += $row` overwrites `r.dataset_id`. Downstream queries filtering by `WHERE r.dataset_id = $dataset_id` (Phase 2 isolation) will not find the row. On re-upload, `MERGE (r:Row {dataset_id: $dataset_id, ...})` creates duplicate nodes, destroying idempotency. | `xfail(strict=True)` |
-| `row_index` | Accepted without error | **ORDERING HOLE**: `r += $row` overwrites `r.row_index`, corrupting row lookups (`show row 0`) and causing duplicate nodes on replay. | `xfail(strict=True)` |
-| `_new` | Accepted without error | Targets loader's internal idempotency marker property. | `xfail(strict=True)` |
-| Empty string `""` | Rejected (`malformed header row`) | Safe by construction. Line 28 rejects `f.strip() == ""`. | **PASSED** |
-| Backtick `` ` `` | Accepted without error | Enters Neo4j as property name `` ` ``. Handled safely in deterministic tier via `_quote_ident("`") -> "````"`, but risky for LLM tier. | **PASSED** |
-| 10k-char header | Accepted without error | Creates 10,000-character Neo4j property name, stressing database schema and memory. | **PASSED** |
-| Duplicate headers (exact) | Accepted without error | **SILENT DATA LOSS**: `csv.DictReader` silently keeps the last value for duplicate headers (e.g. `name,age,name\nAlice,30,Bob` produces `{'name': 'Bob', 'age': '30'}`; `Alice` is permanently dropped). | `xfail(strict=True)` |
-| Duplicate headers (case/space) | Accepted without error | `Name, name ` creates ambiguous, near-identical property names. | `xfail(strict=True)` |
+### B. Invalidation & Routing Rules
+1. **Whole-File Invalidation (HTTP 400)**:
+   - Empty body / whitespace-only.
+   - Non-UTF-8 payload.
+   - Leading blank line (blank first line before headers).
+   - Empty header row or empty column name.
+   - Duplicate headers (exact or case/space insensitive).
+   - Reserved headers (`dataset_id`, `row_index`, `_new`).
+   - Control characters in headers (strict: NUL and all C0 controls).
+   - Maximum column limit (> 100 columns).
+   - Maximum file size (> 10 MB).
+   - **Zero good rows** ("no loadable rows"): If every data row in the CSV is invalid/ragged, the entire upload is rejected with HTTP 400.
+2. **Per-Row Routing (Option B)**:
+   - Blank data lines are skipped and omitted from row counting.
+   - `row_index` is a 0-based sequential index among non-blank records.
+   - **Ragged Rows (Extra Fields)**: Marked `failed=True`, `reason="extra_fields"`, `row={}`, `source_line=line_no`.
+   - **Ragged Rows (Short Rows)**: Marked `failed=True`, `reason="missing_fields"`, `row={}`, `source_line=line_no`.
+   - **Value Control Characters**: Values containing NUL or C0 controls *except* `\t`, `\n`, `\r` are marked `failed=True`, `reason="control_char"`. (Tabs and newlines inside quoted values are valid and load).
+   - Failed rows always have `row={}`. A `None` key is never created or published to Kafka.
 
+### C. `broken.csv` Behavior: Header-as-Data
+- `test_data/broken.csv` has no header row; line 1 (`Acme Co,Billing,128`) was treated as the header row in v0.1 and continues to be used as the header row.
+- Line 1 establishes 3 columns: `Acme Co`, `Billing`, `128`.
+- In Option B:
+  - Line 2 has 6 fields -> `failed=True`, `reason="extra_fields"`.
+  - Line 3 has 3 fields -> `failed=False` (loads into Neo4j).
+  - Line 4 has 4 fields -> `failed=True`, `reason="extra_fields"`.
+  - Line 5 has 3 fields -> `failed=False` (loads into Neo4j).
+  - Line 6 has 5 fields -> `failed=True`, `reason="extra_fields"`.
+  - Line 7 has 4 fields -> `failed=True`, `reason="extra_fields"`.
+- Total data rows: 6. Loaded: 2. Failed: 4. The API returns HTTP 202, and `/status` reports `rows_total: 6, rows_loaded: 2, rows_failed: 4, status: "complete"`.
 
-
+### D. Double-Count Risk & Idempotency Caveat
+- **The Double-Count Mechanism**:
+  In `loader/main.py`, `:Row` and `:FailedRow` are distinct Neo4j node labels. When a message has `failed=False`, `MERGE_ROW` creates `(r:Row)` and increments `d.rows_loaded`. When a message has `failed=True`, `MARK_FAILED` creates `(f:FailedRow)` and increments `d.rows_failed`.
+  If `broken.csv` is re-ingested onto a database where v0.1 previously loaded all 6 rows as `:Row` nodes, re-ingestion will create 4 `:FailedRow` nodes and increment `d.rows_failed` by 4, giving `rows_loaded: 6` and `rows_failed: 4` (total 10 vs `rows_total: 6`).
+  **This is the real double-count case**, not merely a theoretical retry hypothesis.
+- **Idempotency Status**:
+  Failed-row idempotency on replay is **UNVERIFIED until Step 6** (replay testing on clean stack with Testcontainers).
+- **Phase 5 Design Note**:
+  Replace the dual-label architecture with a unified single-node design:
+  - Each record creates a single `(:Row {dataset_id: $dataset_id, row_index: $row_index})` with a `state` property (`state: "loaded"` or `state: "failed"`).
+  - Dataset counters (`rows_loaded`, `rows_failed`) should be derived by querying `count(r)` grouped by state, rather than incrementally mutating separate counter properties on the `Dataset` node across asynchronous transactions.
