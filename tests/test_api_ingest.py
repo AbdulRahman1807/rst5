@@ -11,12 +11,15 @@ Tests:
 """
 
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
+from confluent_kafka import KafkaException
 from fastapi.testclient import TestClient
+from neo4j.exceptions import ServiceUnavailable
 
-from api.main import app
+import api.main as api_main
+from api.main import app, jobs
 
 
 class FakeProducer:
@@ -167,3 +170,224 @@ def test_ingest_broken_csv_returns_202_and_publishes_row_failures(client, fake_p
     for raw in fake_producer.raw_payloads:
         assert '"null":' not in raw
         assert "None:" not in raw
+
+
+# ==============================================================================
+# Ingest Failure Paths & Helper Classes
+# ==============================================================================
+class ErrorProducer:
+    """Fake producer that triggers delivery errors or raises KafkaException."""
+
+    def __init__(self, fail_on_produce: bool = False, fail_on_callback: bool = False):
+        self.fail_on_produce = fail_on_produce
+        self.fail_on_callback = fail_on_callback
+
+    def produce(self, topic, key=None, value=None, callback=None):
+        if self.fail_on_produce:
+            raise KafkaException("simulated buffer full or kafka exception")
+        if self.fail_on_callback and callback:
+            callback("delivery error timeout", MagicMock())
+
+    def poll(self, timeout=0):
+        pass
+
+    def flush(self, timeout=None):
+        pass
+
+    def list_topics(self, timeout=3):
+        return {}
+
+
+class FakeNeo4jResult:
+    def __init__(self, record):
+        self._record = record
+
+    def single(self):
+        return self._record
+
+
+class FakeNeo4jSession:
+    def __init__(self, record=None):
+        self._record = record
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    def run(self, query, **params):
+        return FakeNeo4jResult(self._record)
+
+
+class FakeNeo4jDriver:
+    def __init__(self, record=None, raise_on_verify: Exception | None = None):
+        self._record = record
+        self._raise_on_verify = raise_on_verify
+
+    def session(self, database=None):
+        return FakeNeo4jSession(self._record)
+
+    def verify_connectivity(self):
+        if self._raise_on_verify:
+            raise self._raise_on_verify
+
+
+def test_ingest_non_csv_extension_returns_400(client):
+    """Uploading a non-.csv file must return HTTP 400."""
+    response = client.post(
+        "/ingest",
+        files={"file": ("notes.txt", b"some text", "text/plain")},
+    )
+    assert response.status_code == 400
+    assert "file must be a .csv" in response.json()["detail"]
+
+
+def test_ingest_kafka_exception_returns_503(client, monkeypatch):
+    """KafkaException or BufferError on produce must return HTTP 503."""
+    monkeypatch.setattr("api.main.get_producer", lambda: ErrorProducer(fail_on_produce=True))
+    response = client.post(
+        "/ingest",
+        files={"file": ("valid.csv", b"a,b\n1,2\n", "text/csv")},
+    )
+    assert response.status_code == 503
+    assert "kafka temporarily unavailable" in response.json()["detail"]
+
+
+def test_ingest_kafka_delivery_error_returns_503(client, monkeypatch):
+    """Callback delivery failures must return HTTP 503."""
+    monkeypatch.setattr("api.main.get_producer", lambda: ErrorProducer(fail_on_callback=True))
+    response = client.post(
+        "/ingest",
+        files={"file": ("valid.csv", b"a,b\n1,2\n", "text/csv")},
+    )
+    assert response.status_code == 503
+    assert "kafka temporarily unavailable" in response.json()["detail"]
+
+
+# ==============================================================================
+# /health, /status, /chat & Driver Initialization Unit Tests
+# ==============================================================================
+def test_health_endpoint_healthy(client, monkeypatch):
+    """When Kafka and Neo4j are connected, /health returns ok."""
+    monkeypatch.setattr("api.main.get_producer", lambda: ErrorProducer())
+    monkeypatch.setattr("api.main.get_driver", lambda: FakeNeo4jDriver())
+    response = client.get("/health")
+    assert response.status_code == 200
+    data = response.json()
+    assert data == {"status": "ok", "kafka_connected": True, "neo4j_connected": True}
+
+
+def test_health_endpoint_kafka_unhealthy(client, monkeypatch):
+    """When Kafka probe fails, /health returns not_ok."""
+
+    class BrokenKafka:
+        def list_topics(self, timeout=3):
+            raise RuntimeError("kafka down")
+
+    monkeypatch.setattr("api.main.get_producer", lambda: BrokenKafka())
+    monkeypatch.setattr("api.main.get_driver", lambda: FakeNeo4jDriver())
+    response = client.get("/health")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "not_ok"
+    assert data["kafka_connected"] is False
+    assert data["neo4j_connected"] is True
+
+
+def test_health_endpoint_neo4j_unhealthy(client, monkeypatch):
+    """When Neo4j probe fails, /health returns not_ok."""
+    monkeypatch.setattr("api.main.get_producer", lambda: ErrorProducer())
+    monkeypatch.setattr(
+        "api.main.get_driver",
+        lambda: FakeNeo4jDriver(raise_on_verify=ServiceUnavailable("db down")),
+    )
+    response = client.get("/health")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "not_ok"
+    assert data["kafka_connected"] is True
+    assert data["neo4j_connected"] is False
+
+
+def test_status_unknown_job_id_returns_404(client):
+    """Querying /status for an unregistered job_id returns HTTP 404."""
+    response = client.get("/status?job_id=unknown_job_id_12345")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "unknown job_id"
+
+
+def test_status_queued_when_no_neo4j_record(client, monkeypatch):
+    """When job is registered but not yet loaded into Neo4j, status returns 'queued'."""
+    jobs["job_queued_test"] = {"rows_received": 10, "received_at": "2026-10-20T10:00:00Z"}
+    monkeypatch.setattr("api.main.get_driver", lambda: FakeNeo4jDriver(record=None))
+
+    response = client.get("/status?job_id=job_queued_test")
+    assert response.status_code == 200
+    assert response.json() == {
+        "job_id": "job_queued_test",
+        "status": "queued",
+        "rows_total": 10,
+        "rows_loaded": 0,
+        "rows_failed": 0,
+    }
+
+
+def test_status_complete_when_neo4j_record_found(client, monkeypatch):
+    """When Neo4j record exists, /status returns current status and counters."""
+    jobs["job_complete_test"] = {"rows_received": 6, "received_at": "2026-10-20T10:00:00Z"}
+    db_record = {
+        "status": "complete",
+        "rows_total": 6,
+        "rows_loaded": 2,
+        "rows_failed": 4,
+    }
+    monkeypatch.setattr("api.main.get_driver", lambda: FakeNeo4jDriver(record=db_record))
+
+    response = client.get("/status?job_id=job_complete_test")
+    assert response.status_code == 200
+    assert response.json() == {
+        "job_id": "job_complete_test",
+        "status": "complete",
+        "rows_total": 6,
+        "rows_loaded": 2,
+        "rows_failed": 4,
+    }
+
+
+def test_chat_endpoint_calls_chatbot(client, monkeypatch):
+    """The /chat endpoint passes question to chatbot.answer_question."""
+    fake_driver = FakeNeo4jDriver()
+    monkeypatch.setattr("api.main.get_driver", lambda: fake_driver)
+    mock_answer = MagicMock(return_value={"answer": "42 rows", "cypher": None, "grounded": True})
+    monkeypatch.setattr("api.main.chatbot.answer_question", mock_answer)
+
+    # Test with body
+    resp = client.post("/chat", json={"question": "How many rows?"})
+    assert resp.status_code == 200
+    assert resp.json()["answer"] == "42 rows"
+    mock_answer.assert_called_with(fake_driver, api_main.NEO4J_DATABASE, "How many rows?")
+
+    # Test direct call with payload=None (exercises line 175)
+    res_direct = api_main.chat(payload=None)
+    assert res_direct["answer"] == "42 rows"
+
+
+def test_lazy_driver_and_producer_initialization(monkeypatch):
+    """Lines 57-59 and 64-66 initialize _producer and _driver when None."""
+    monkeypatch.setattr("api.main._producer", None)
+    monkeypatch.setattr("api.main._driver", None)
+
+    with (
+        patch("api.main.Producer") as mock_prod_cls,
+        patch("api.main.GraphDatabase.driver") as mock_drv_cls,
+    ):
+        p1 = api_main.get_producer()
+        p2 = api_main.get_producer()
+        assert p1 is p2
+        assert mock_prod_cls.call_count == 1
+
+        d1 = api_main.get_driver()
+        d2 = api_main.get_driver()
+        assert d1 is d2
+        assert mock_drv_cls.call_count == 1
