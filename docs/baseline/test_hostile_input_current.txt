@@ -1,18 +1,25 @@
+# Baseline captured after Step 4b (Option B per-row routing).
+# Note: The chat count differs from v0.1 (21 -> ~17) and is timing-dependent:
+# v0.1 ingested broken.csv unconditionally (15 + 6 = 21 rows).
+# Under Option B, broken.csv loads 2 valid rows into :Row and 4 ragged rows into :FailedRow (15 + 2 = 17 :Row nodes).
+# On a fresh stack, the count seen by /chat immediately after upload is timing-dependent based on Kafka/loader lag.
+
 --- /ingest hostile input ---
 PASS: test_data/empty.csv -> HTTP 400
 PASS: test_data/header_only.csv -> HTTP 400
 PASS: test_data/not_a_csv.txt -> HTTP 400
+PASS: test_data/all_ragged.csv -> HTTP 400
 PASS: test_data/broken.csv -> HTTP 202
 PASS: test_data/small_clean.csv -> HTTP 202
 
 --- /chat hostile input ---
 Question before any upload (only meaningful on a fresh stack):
 {
-    "answer": "There are 21 rows in total.",
+    "answer": "There are 17 rows in total.",
     "cypher": "MATCH (r:Row) RETURN count(r) AS count",
     "result": [
         {
-            "count": 21
+            "count": 17
         }
     ],
     "grounded": true
