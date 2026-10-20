@@ -57,6 +57,7 @@ MUST_REJECT_CASES = [
         "MATCH (r:Row) CALL apoc.refactor.renameLabel('Row', 'OldRow', [r]) RETURN count(*)",
         marks=pytest.mark.xfail(
             strict=True,
+            raises=AssertionError,
             reason="fix in Phase 2: CALL apoc.* procedures not blocked by CALL db. regex (FAIL-OPEN; exploitable: unverified (Step 6))",
         ),
         id="reject-apoc-call-mutation",
@@ -65,6 +66,7 @@ MUST_REJECT_CASES = [
         "MATCH (r:Row) CALL apoc.schema.assert({}, {}) RETURN count(*)",
         marks=pytest.mark.xfail(
             strict=True,
+            raises=AssertionError,
             reason="fix in Phase 2: CALL apoc.* schema procedures not blocked (FAIL-OPEN; exploitable: unverified (Step 6))",
         ),
         id="reject-apoc-call-schema",
@@ -73,6 +75,7 @@ MUST_REJECT_CASES = [
         "MATCH (n)\n\tCALL\tapoc.refactor.renameLabel('A', 'B', [n]) RETURN count(*)",
         marks=pytest.mark.xfail(
             strict=True,
+            raises=AssertionError,
             reason="fix in Phase 2: CALL apoc.* with tabs/newlines not blocked (FAIL-OPEN; exploitable: unverified (Step 6))",
         ),
         id="reject-apoc-tab-newline",
@@ -81,6 +84,7 @@ MUST_REJECT_CASES = [
         "MATCH (r:Row) CALL dbms.security.createUser('attacker', 'pass', false) RETURN r",
         marks=pytest.mark.xfail(
             strict=True,
+            raises=AssertionError,
             reason="fix in Phase 2: CALL dbms.* procedures not blocked by CALL db. regex (FAIL-OPEN; exploitable: unverified (Step 6))",
         ),
         id="reject-dbms-call-security",
@@ -89,6 +93,7 @@ MUST_REJECT_CASES = [
         "MATCH (r:Row) RETURN count(r); CALL dbms.security.createUser('attacker', 'pass', false)",
         marks=pytest.mark.xfail(
             strict=True,
+            raises=AssertionError,
             reason="fix in Phase 2: multi-statement query with semicolon not blocked (FAIL-OPEN; exploitable: unverified (Step 6))",
         ),
         id="reject-semicolon-dbms-injection",
@@ -97,6 +102,7 @@ MUST_REJECT_CASES = [
         "MATCH (r:Row) RETURN count(r); RETURN 1",
         marks=pytest.mark.xfail(
             strict=True,
+            raises=AssertionError,
             reason="fix in Phase 2: multi-statement query with semicolon not blocked (FAIL-OPEN; exploitable: unverified (Step 6))",
         ),
         id="reject-semicolon-piggyback",
@@ -109,6 +115,7 @@ MUST_REJECT_CASES = [
         "MATCH (r:Row) LOAD/*trick*/CSV FROM 'http://malicious.site/data.csv' AS row RETURN row",
         marks=pytest.mark.xfail(
             strict=True,
+            raises=AssertionError,
             reason="fix in Phase 2: inline comment breaks LOAD\\s+CSV regex (FAIL-OPEN; exploitable: unverified (Step 6))",
         ),
         id="reject-load-csv-comment-obfuscation",
@@ -123,6 +130,7 @@ MUST_REJECT_CASES = [
         "MATCH (r:Row) RETURN r",
         marks=pytest.mark.xfail(
             strict=True,
+            raises=AssertionError,
             reason="fix in Phase 2: POLICY-PENDING (inject LIMIT 200 when absent on row returns; reject literal > 200)",
         ),
         id="reject-missing-limit",
@@ -131,6 +139,7 @@ MUST_REJECT_CASES = [
         "MATCH (r:Row) RETURN r LIMIT 50000",
         marks=pytest.mark.xfail(
             strict=True,
+            raises=AssertionError,
             reason="fix in Phase 2: POLICY-PENDING (reject literal > 200)",
         ),
         id="reject-excessive-limit",
@@ -143,6 +152,7 @@ MUST_REJECT_CASES = [
         "MATCH (r:Row) ＣＲＥＡＴＥ (n:Test)",
         marks=pytest.mark.xfail(
             strict=True,
+            raises=AssertionError,
             reason="fix in Phase 2: fullwidth unicode homoglyphs bypass ASCII word boundaries (FAIL-OPEN: validator gap, Neo4j rejects (verified via EXPLAIN))",
         ),
         id="reject-unicode-fullwidth-create",
@@ -151,6 +161,7 @@ MUST_REJECT_CASES = [
         "MATCH (r:Row) C\u200bREATE (n:Test)",
         marks=pytest.mark.xfail(
             strict=True,
+            raises=AssertionError,
             reason="fix in Phase 2: zero-width characters break ASCII word boundaries (FAIL-OPEN: validator gap, Neo4j rejects (verified via EXPLAIN))",
         ),
         id="reject-unicode-zerowidth-create",
@@ -193,6 +204,7 @@ MUST_ACCEPT_CASES = [
         "MATCH (r:Row) WHERE r.action = 'delete' RETURN r LIMIT 10",
         marks=pytest.mark.xfail(
             strict=True,
+            raises=AssertionError,
             reason="fix in Phase 2: 'delete' inside string literal falsely triggers write keyword regex (FAIL-CLOSED; no lexer)",
         ),
         id="accept-string-literal-delete",
@@ -201,6 +213,7 @@ MUST_ACCEPT_CASES = [
         "MATCH (r:Row) WHERE r.status = 'SET' RETURN r LIMIT 10",
         marks=pytest.mark.xfail(
             strict=True,
+            raises=AssertionError,
             reason="fix in Phase 2: 'SET' inside string literal falsely triggers write keyword regex (FAIL-CLOSED; no lexer)",
         ),
         id="accept-string-literal-set",
@@ -209,6 +222,7 @@ MUST_ACCEPT_CASES = [
         "MATCH (r:Row) WHERE r.comment = 'REMOVE BEFORE FLIGHT' RETURN r LIMIT 10",
         marks=pytest.mark.xfail(
             strict=True,
+            raises=AssertionError,
             reason="fix in Phase 2: 'REMOVE' inside string literal falsely triggers write keyword regex (FAIL-CLOSED; no lexer)",
         ),
         id="accept-string-literal-remove",
@@ -217,6 +231,7 @@ MUST_ACCEPT_CASES = [
         "MATCH (r:Row) // CREATE comment\nRETURN count(r) LIMIT 10",
         marks=pytest.mark.xfail(
             strict=True,
+            raises=AssertionError,
             reason="fix in Phase 2: 'CREATE' inside line comment falsely triggers write keyword regex (FAIL-CLOSED; no lexer)",
         ),
         id="accept-comment-containing-keyword",
@@ -225,6 +240,7 @@ MUST_ACCEPT_CASES = [
         "/* detailed analytics query */ MATCH (r:Row) RETURN count(r) LIMIT 10",
         marks=pytest.mark.xfail(
             strict=True,
+            raises=AssertionError,
             reason="fix in Phase 2: leading block comment /* ... */ fails READ_START prefix check (FAIL-CLOSED; no lexer)",
         ),
         id="accept-leading-block-comment",
@@ -233,6 +249,7 @@ MUST_ACCEPT_CASES = [
         "MATCH (r:Row) RETURN r.`SET` LIMIT 10",
         marks=pytest.mark.xfail(
             strict=True,
+            raises=AssertionError,
             reason="fix in Phase 2: backticked property `SET` falsely triggers write keyword regex (FAIL-CLOSED; no lexer)",
         ),
         id="accept-backtick-property-keyword",

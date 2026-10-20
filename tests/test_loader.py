@@ -273,6 +273,7 @@ def test_loader_skips_none_messages_and_errors():
 # ==============================================================================
 @pytest.mark.xfail(
     strict=True,
+    raises=json.JSONDecodeError,
     reason="fix in Phase 5: DLQ / poison pill: malformed JSON in loader/main.py crashes consumer loop with unhandled JSONDecodeError",
 )
 def test_loader_survives_malformed_json():
@@ -295,6 +296,7 @@ def test_loader_survives_malformed_json():
 
 @pytest.mark.xfail(
     strict=True,
+    raises=KeyError,
     reason="fix in Phase 5: DLQ / poison pill: missing required fields ('dataset_id' or 'row_index') raises unhandled KeyError in consumer loop",
 )
 def test_loader_survives_missing_required_fields():
