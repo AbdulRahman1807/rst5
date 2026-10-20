@@ -6,7 +6,7 @@ This suite tests the CURRENT guardrail (api/guardrail.py) against a wide corpus 
 
 Any test case that the CURRENT guardrail gets wrong is marked with:
     xfail(strict=True, reason="fix in Phase 2: ...")
-This gap list forms the strict specification for the Phase 2 guardrail rewrite.
+Gaps are categorized by root cause and exploitability status.
 """
 
 import pytest
@@ -28,9 +28,13 @@ MUST_REJECT_CASES = [
     pytest.param("DROP INDEX ON :Row(id)", id="reject-drop-index"),
     pytest.param("DROP CONSTRAINT unique_id IF EXISTS", id="reject-drop-constraint"),
     pytest.param("MATCH (n) FOREACH (x IN [1] | CREATE (:Test))", id="reject-foreach-create"),
+    pytest.param("UNWIND [1, 2] AS x CREATE (n:Test {val: x})", id="reject-unwind-create"),
+    pytest.param("OPTIONAL MATCH (r:Row) DELETE r", id="reject-optional-match-delete"),
     pytest.param("LOAD CSV FROM 'http://malicious.site/data.csv' AS row CREATE (:Row)", id="reject-load-csv"),
     pytest.param("CALL db.clearQueryCaches()", id="reject-call-db-procedure"),
     pytest.param("CALL db.indexes()", id="reject-call-db-indexes"),
+    pytest.param("MATCH (n)\n\tCALL\tdb.clearQueryCaches()", id="reject-call-db-tab-newline"),
+
     # -------------------------------------------------------------------------
     # Obfuscation: mixed case, whitespace, newlines, tabs
     # -------------------------------------------------------------------------
@@ -44,63 +48,111 @@ MUST_REJECT_CASES = [
     pytest.param(NO_QUERY, id="reject-no-query-token"),
     pytest.param("EXPLAIN MATCH (n) RETURN n", id="reject-non-read-start-explain"),
     pytest.param("PROFILE MATCH (n) RETURN n", id="reject-non-read-start-profile"),
+
     # -------------------------------------------------------------------------
-    # FAIL-OPEN GAPS: Dangerous queries that current guardrail incorrectly ACCEPTS
-    # (Strict xfail: must fail now, and must be resolved in Phase 2)
+    # Root Cause: Denylist, not allowlist (FAIL-OPEN, exploitable: unverified (Step 6))
     # -------------------------------------------------------------------------
     pytest.param(
         "MATCH (r:Row) CALL apoc.refactor.renameLabel('Row', 'OldRow', [r]) RETURN count(*)",
         marks=pytest.mark.xfail(
-            strict=True, reason="fix in Phase 2: CALL apoc.* procedures not blocked by CALL db. regex"
+            strict=True,
+            reason="fix in Phase 2: CALL apoc.* procedures not blocked by CALL db. regex (FAIL-OPEN; exploitable: unverified (Step 6))",
         ),
         id="reject-apoc-call-mutation",
     ),
     pytest.param(
         "MATCH (r:Row) CALL apoc.schema.assert({}, {}) RETURN count(*)",
-        marks=pytest.mark.xfail(strict=True, reason="fix in Phase 2: CALL apoc.* schema procedures not blocked"),
+        marks=pytest.mark.xfail(
+            strict=True,
+            reason="fix in Phase 2: CALL apoc.* schema procedures not blocked (FAIL-OPEN; exploitable: unverified (Step 6))",
+        ),
         id="reject-apoc-call-schema",
+    ),
+    pytest.param(
+        "MATCH (n)\n\tCALL\tapoc.refactor.renameLabel('A', 'B', [n]) RETURN count(*)",
+        marks=pytest.mark.xfail(
+            strict=True,
+            reason="fix in Phase 2: CALL apoc.* with tabs/newlines not blocked (FAIL-OPEN; exploitable: unverified (Step 6))",
+        ),
+        id="reject-apoc-tab-newline",
     ),
     pytest.param(
         "MATCH (r:Row) CALL dbms.security.createUser('attacker', 'pass', false) RETURN r",
         marks=pytest.mark.xfail(
-            strict=True, reason="fix in Phase 2: CALL dbms.* procedures not blocked by CALL db. regex"
+            strict=True,
+            reason="fix in Phase 2: CALL dbms.* procedures not blocked by CALL db. regex (FAIL-OPEN; exploitable: unverified (Step 6))",
         ),
         id="reject-dbms-call-security",
     ),
     pytest.param(
-        "MATCH (r:Row) LOAD/*trick*/CSV FROM 'http://malicious.site/data.csv' AS row RETURN row",
-        marks=pytest.mark.xfail(strict=True, reason="fix in Phase 2: inline comment breaks LOAD\\s+CSV regex"),
-        id="reject-load-csv-comment-obfuscation",
-    ),
-    pytest.param(
         "MATCH (r:Row) RETURN count(r); CALL dbms.security.createUser('attacker', 'pass', false)",
-        marks=pytest.mark.xfail(strict=True, reason="fix in Phase 2: multi-statement query with semicolon not blocked"),
+        marks=pytest.mark.xfail(
+            strict=True,
+            reason="fix in Phase 2: multi-statement query with semicolon not blocked (FAIL-OPEN; exploitable: unverified (Step 6))",
+        ),
         id="reject-semicolon-dbms-injection",
     ),
     pytest.param(
         "MATCH (r:Row) RETURN count(r); RETURN 1",
-        marks=pytest.mark.xfail(strict=True, reason="fix in Phase 2: multi-statement query with semicolon not blocked"),
+        marks=pytest.mark.xfail(
+            strict=True,
+            reason="fix in Phase 2: multi-statement query with semicolon not blocked (FAIL-OPEN; exploitable: unverified (Step 6))",
+        ),
         id="reject-semicolon-piggyback",
     ),
+
+    # -------------------------------------------------------------------------
+    # Root Cause: No lexing (FAIL-OPEN, exploitable: unverified (Step 6))
+    # -------------------------------------------------------------------------
+    pytest.param(
+        "MATCH (r:Row) LOAD/*trick*/CSV FROM 'http://malicious.site/data.csv' AS row RETURN row",
+        marks=pytest.mark.xfail(
+            strict=True,
+            reason="fix in Phase 2: inline comment breaks LOAD\\s+CSV regex (FAIL-OPEN; exploitable: unverified (Step 6))",
+        ),
+        id="reject-load-csv-comment-obfuscation",
+    ),
+
+    # -------------------------------------------------------------------------
+    # Root Cause: No LIMIT policy (POLICY-PENDING)
+    # Aggregates like count(r) legitimately have no LIMIT; policy decided in Phase 2:
+    # inject LIMIT 200 when absent on row returns, reject literal > 200.
+    # -------------------------------------------------------------------------
     pytest.param(
         "MATCH (r:Row) RETURN r",
         marks=pytest.mark.xfail(
-            strict=True, reason="fix in Phase 2: LIMIT clause of 200 or fewer is not enforced in code"
+            strict=True,
+            reason="fix in Phase 2: POLICY-PENDING (inject LIMIT 200 when absent on row returns; reject literal > 200)",
         ),
         id="reject-missing-limit",
     ),
     pytest.param(
         "MATCH (r:Row) RETURN r LIMIT 50000",
-        marks=pytest.mark.xfail(strict=True, reason="fix in Phase 2: LIMIT exceeds maximum cap of 200 rows"),
+        marks=pytest.mark.xfail(
+            strict=True,
+            reason="fix in Phase 2: POLICY-PENDING (reject literal > 200)",
+        ),
         id="reject-excessive-limit",
     ),
+
+    # -------------------------------------------------------------------------
+    # Root Cause: No Unicode normalization (FAIL-OPEN: validator gap, Neo4j rejects (verified via EXPLAIN))
+    # -------------------------------------------------------------------------
     pytest.param(
         "MATCH (r:Row) ＣＲＥＡＴＥ (n:Test)",
         marks=pytest.mark.xfail(
             strict=True,
-            reason="fix in Phase 2: fullwidth unicode homoglyphs bypass ASCII word-boundary regex (Neo4j syntax error)",
+            reason="fix in Phase 2: fullwidth unicode homoglyphs bypass ASCII word boundaries (FAIL-OPEN: validator gap, Neo4j rejects (verified via EXPLAIN))",
         ),
         id="reject-unicode-fullwidth-create",
+    ),
+    pytest.param(
+        "MATCH (r:Row) C\u200bREATE (n:Test)",
+        marks=pytest.mark.xfail(
+            strict=True,
+            reason="fix in Phase 2: zero-width characters break ASCII word boundaries (FAIL-OPEN: validator gap, Neo4j rejects (verified via EXPLAIN))",
+        ),
+        id="reject-unicode-zerowidth-create",
     ),
 ]
 
@@ -128,49 +180,59 @@ MUST_ACCEPT_CASES = [
         "MATCH (r:Row) RETURN [k IN keys(r) WHERE NOT k IN ['row_index', 'dataset_id']] AS columns LIMIT 1",
         id="accept-schema-columns-query",
     ),
+    pytest.param("MATCH (r:Row) WHERE r.text = 'a;b' RETURN r LIMIT 10", id="accept-semicolon-in-string-literal"),
+    pytest.param("MATCH (r:Row) RETURN r LIMIT 200", id="accept-limit-200-boundary"),
+    pytest.param("MATCH (r:Row) RETURN r LIMIT $limit", id="accept-limit-parameter"),
+    pytest.param("MATCH (r:Row) RETURN r.apoc, r.call LIMIT 10", id="accept-properties-named-apoc-call"),
+
     # -------------------------------------------------------------------------
-    # FAIL-CLOSED GAPS: Benign queries that current guardrail incorrectly REJECTS
-    # (Strict xfail: must fail now, and must be resolved in Phase 2)
+    # Root Cause: No lexing (FAIL-CLOSED: benign queries rejected by string/comment regex collision)
     # -------------------------------------------------------------------------
     pytest.param(
         "MATCH (r:Row) WHERE r.action = 'delete' RETURN r LIMIT 10",
         marks=pytest.mark.xfail(
-            strict=True, reason="fix in Phase 2: 'delete' inside string literal falsely triggers write keyword regex"
+            strict=True,
+            reason="fix in Phase 2: 'delete' inside string literal falsely triggers write keyword regex (FAIL-CLOSED; no lexer)",
         ),
         id="accept-string-literal-delete",
     ),
     pytest.param(
         "MATCH (r:Row) WHERE r.status = 'SET' RETURN r LIMIT 10",
         marks=pytest.mark.xfail(
-            strict=True, reason="fix in Phase 2: 'SET' inside string literal falsely triggers write keyword regex"
+            strict=True,
+            reason="fix in Phase 2: 'SET' inside string literal falsely triggers write keyword regex (FAIL-CLOSED; no lexer)",
         ),
         id="accept-string-literal-set",
     ),
     pytest.param(
         "MATCH (r:Row) WHERE r.comment = 'REMOVE BEFORE FLIGHT' RETURN r LIMIT 10",
         marks=pytest.mark.xfail(
-            strict=True, reason="fix in Phase 2: 'REMOVE' inside string literal falsely triggers write keyword regex"
+            strict=True,
+            reason="fix in Phase 2: 'REMOVE' inside string literal falsely triggers write keyword regex (FAIL-CLOSED; no lexer)",
         ),
         id="accept-string-literal-remove",
     ),
     pytest.param(
         "MATCH (r:Row) // CREATE comment\nRETURN count(r) LIMIT 10",
         marks=pytest.mark.xfail(
-            strict=True, reason="fix in Phase 2: 'CREATE' inside line comment falsely triggers write keyword regex"
+            strict=True,
+            reason="fix in Phase 2: 'CREATE' inside line comment falsely triggers write keyword regex (FAIL-CLOSED; no lexer)",
         ),
         id="accept-comment-containing-keyword",
     ),
     pytest.param(
         "/* detailed analytics query */ MATCH (r:Row) RETURN count(r) LIMIT 10",
         marks=pytest.mark.xfail(
-            strict=True, reason="fix in Phase 2: leading block comment /* ... */ fails READ_START prefix check"
+            strict=True,
+            reason="fix in Phase 2: leading block comment /* ... */ fails READ_START prefix check (FAIL-CLOSED; no lexer)",
         ),
         id="accept-leading-block-comment",
     ),
     pytest.param(
         "MATCH (r:Row) RETURN r.`SET` LIMIT 10",
         marks=pytest.mark.xfail(
-            strict=True, reason="fix in Phase 2: backticked property `SET` falsely triggers write keyword regex"
+            strict=True,
+            reason="fix in Phase 2: backticked property `SET` falsely triggers write keyword regex (FAIL-CLOSED; no lexer)",
         ),
         id="accept-backtick-property-keyword",
     ),
