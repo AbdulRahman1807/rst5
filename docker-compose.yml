@@ -29,7 +29,7 @@ services:
       interval: 5s
       timeout: 10s
       retries: 20
-      start_period: 20s
+      start_period: 40s
 
   neo4j:
     image: neo4j:5.24-community

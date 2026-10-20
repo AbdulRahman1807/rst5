@@ -119,7 +119,6 @@ def generate_cypher(question: str, columns: list[str], sample_row: dict) -> str:
     return raw
 
 
-
 # Hard cap regardless of what the LLM's query does — a forgotten LIMIT on a "list all rows"
 # style question against a large dataset (see test_data/large.csv, 5000 rows) would otherwise
 # pull the whole graph into memory and into the HTTP response.

@@ -27,8 +27,7 @@ def test_quote_ident():
 
 
 def test_guardrail_baseline():
-    """Verify the baseline read-only validator blocks write clauses and approves read queries."""
-    from chatbot import NO_QUERY, validate_read_only
+    from guardrail import NO_QUERY, validate_read_only
 
     # Should approve read-only queries
     assert validate_read_only("MATCH (r:Row) RETURN count(r)") is True
