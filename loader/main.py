@@ -28,7 +28,7 @@ MERGE (d:Dataset {id: $dataset_id})
                 d.rows_total = $rows_total, d.rows_loaded = 0,
                 d.rows_failed = 0, d.status = 'loading'
 MERGE (r:Row {dataset_id: $dataset_id, row_index: $row_index})
-  ON CREATE SET r += $row, r._new = true
+  ON CREATE SET r += $row, r.dataset_id = $dataset_id, r.row_index = $row_index, r._new = true
   ON MATCH SET r._new = false
 MERGE (d)-[:HAS_ROW]->(r)
 WITH d, r
