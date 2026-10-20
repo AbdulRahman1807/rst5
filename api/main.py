@@ -98,6 +98,10 @@ async def ingest(file: UploadFile = File(...)):
     except CSVValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    good_rows = [r for r in rows if not r.failed]
+    if not good_rows:
+        raise HTTPException(status_code=400, detail="no loadable rows")
+
     dataset_id = hashlib.sha256(raw).hexdigest()
     rows_total = len(rows)
     uploaded_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -113,14 +117,16 @@ async def ingest(file: UploadFile = File(...)):
 
     try:
         producer = get_producer()
-        for i, row in enumerate(rows):
+        for i, r in enumerate(rows):
             message = {
                 "dataset_id": dataset_id,
                 "filename": file.filename,
                 "uploaded_at": uploaded_at,
                 "row_index": i,
                 "rows_total": rows_total,
-                "row": row,
+                "failed": r.failed,
+                "reason": r.reason,
+                "row": r.row,
             }
             producer.produce(
                 KAFKA_TOPIC,
@@ -138,6 +144,7 @@ async def ingest(file: UploadFile = File(...)):
         raise HTTPException(status_code=503, detail="kafka temporarily unavailable, please retry")
 
     return {"job_id": dataset_id, "rows_received": rows_total, "status": "queued"}
+
 
 
 @app.get("/status")
