@@ -94,16 +94,12 @@ async def ingest(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="file must be a .csv")
 
     try:
-        rows = parse_and_validate_csv(raw)
+        parsed_csv = parse_and_validate_csv(raw)
     except CSVValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    good_rows = [r for r in rows if not r.failed]
-    if not good_rows:
-        raise HTTPException(status_code=400, detail="no loadable rows")
-
     dataset_id = hashlib.sha256(raw).hexdigest()
-    rows_total = len(rows)
+    rows_total = len(parsed_csv.rows)
     uploaded_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     jobs[dataset_id] = {"rows_received": rows_total, "received_at": uploaded_at}
@@ -117,16 +113,17 @@ async def ingest(file: UploadFile = File(...)):
 
     try:
         producer = get_producer()
-        for i, r in enumerate(rows):
+        for parsed_row in parsed_csv.rows:
             message = {
                 "dataset_id": dataset_id,
                 "filename": file.filename,
                 "uploaded_at": uploaded_at,
-                "row_index": i,
+                "row_index": parsed_row.index,
                 "rows_total": rows_total,
-                "failed": r.failed,
-                "reason": r.reason,
-                "row": r.row,
+                "failed": parsed_row.failed,
+                "reason": parsed_row.reason,
+                "source_line": parsed_row.source_line,
+                "row": parsed_row.row,
             }
             producer.produce(
                 KAFKA_TOPIC,
@@ -144,7 +141,6 @@ async def ingest(file: UploadFile = File(...)):
         raise HTTPException(status_code=503, detail="kafka temporarily unavailable, please retry")
 
     return {"job_id": dataset_id, "rows_received": rows_total, "status": "queued"}
-
 
 
 @app.get("/status")
