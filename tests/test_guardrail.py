@@ -10,7 +10,8 @@ Gaps are categorized by root cause and exploitability status.
 """
 
 import pytest
-from guardrail import NO_QUERY, validate_read_only
+
+from api.guardrail import NO_QUERY, validate_read_only
 
 # ==============================================================================
 # MUST-REJECT CORPUS: Queries that MUST be rejected by a secure read-only guardrail

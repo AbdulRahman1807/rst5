@@ -20,14 +20,14 @@ def test_imports():
 
 def test_quote_ident():
     """Verify that identifier quoting safely wraps column names in backticks."""
-    from chatbot_deterministic import _quote_ident
+    from api.chatbot_deterministic import _quote_ident
 
     assert _quote_ident("customer") == "`customer`"
     assert _quote_ident("col`name") == "`col``name`"
 
 
 def test_guardrail_baseline():
-    from guardrail import NO_QUERY, validate_read_only
+    from api.guardrail import NO_QUERY, validate_read_only
 
     # Should approve read-only queries
     assert validate_read_only("MATCH (r:Row) RETURN count(r)") is True
