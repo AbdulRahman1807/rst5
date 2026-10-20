@@ -60,10 +60,6 @@ def test_csv_quoted_newlines_accepted():
     assert rows[0]["description"] == "first line\nsecond line"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="fix in Phase 1: UTF-8 BOM is not stripped by utf-8 decode, leaving \\ufeff in the first header name",
-)
 def test_csv_utf8_bom_stripped():
     """UTF-8 BOM (0xEF 0xBB 0xBF) must be stripped so the first header name is not corrupted."""
     raw = b"\xef\xbb\xbfname,age\nAlice,30\n"
@@ -227,10 +223,6 @@ def test_csv_ragged_rows_short_rows_rejected():
         parse_and_validate_csv(raw)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="fix in Phase 1: huge field raises unhandled _csv.Error instead of CSVValidationError",
-)
 def test_csv_huge_field_raises_csv_validation_error():
     """Field exceeding csv.field_size_limit (128KB) must raise CSVValidationError, not unhandled _csv.Error."""
     # 200KB field exceeds default csv.field_size_limit (131072)
@@ -239,10 +231,6 @@ def test_csv_huge_field_raises_csv_validation_error():
         parse_and_validate_csv(raw)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="fix in Phase 1: bare CR (\\r) in unquoted field raises unhandled _csv.Error instead of CSVValidationError",
-)
 def test_csv_bare_cr_in_unquoted_field_raises_csv_validation_error():
     """Bare carriage return inside unquoted field must raise CSVValidationError, not unhandled _csv.Error."""
     raw = b"a,b\n1,foo\rbar\n"
