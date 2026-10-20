@@ -11,7 +11,10 @@ Verifies:
 from typing import Any, Callable
 
 import pytest
-from chatbot_deterministic import (
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
+from api.chatbot_deterministic import (
     _aggregate_intent,
     _count_intent,
     _dataset_status_intent,
@@ -197,46 +200,59 @@ def test_matched_columns():
 #    "Assert user-supplied text never appears in query string except via _quote_ident,
 #     and values only appear in params."
 # ==============================================================================
+# Unique canary tokens designed to ensure that any appearance in query text is an unambiguous leak.
+CANARY_VAL_SEMI = "x9f3_canary_'; DROP ALL NODES; --"
+CANARY_VAL_OR = "x9f3_canary_admin' OR '1'='1"
+CANARY_COL_SEMI = "department_x9f3_canary; DROP (n)"
+CANARY_COL_BACKTICK = "`evil`col_x9f3_canary`"
+
+
 @pytest.mark.parametrize(
-    ("question", "columns", "distinct_map"),
+    ("question", "columns", "distinct_map", "expects_value_param"),
     [
         (
-            "how many rows belong to '; DROP ALL NODES; --",
-            ["department; DROP (n)"],
-            {"department; DROP (n)": ["'; DROP ALL NODES; --"]},
+            f"how many rows belong to {CANARY_VAL_SEMI}",
+            [CANARY_COL_SEMI],
+            {CANARY_COL_SEMI: [CANARY_VAL_SEMI]},
+            True,
         ),
         (
-            "average `evil`col` for admin' OR '1'='1",
-            ["`evil`col`", "group"],
-            {"group": ["admin' OR '1'='1"]},
+            f"average {CANARY_COL_BACKTICK} for {CANARY_VAL_OR}",
+            [CANARY_COL_BACKTICK, "group"],
+            {"group": [CANARY_VAL_OR]},
+            True,
         ),
         (
-            "show rows where department; DROP (n) is '; DROP ALL NODES; --",
-            ["department; DROP (n)"],
-            {"department; DROP (n)": ["'; DROP ALL NODES; --"]},
+            f"show rows where {CANARY_COL_SEMI} is {CANARY_VAL_SEMI}",
+            [CANARY_COL_SEMI],
+            {CANARY_COL_SEMI: [CANARY_VAL_SEMI]},
+            True,
         ),
         (
-            "how many rows have `evil`col` over 100",
-            ["`evil`col`"],
+            f"how many rows have {CANARY_COL_BACKTICK} over 100",
+            [CANARY_COL_BACKTICK],
             {},
+            False,
         ),
         (
-            "top 5 by department; DROP (n)",
-            ["department; DROP (n)"],
+            f"top 5 by {CANARY_COL_SEMI}",
+            [CANARY_COL_SEMI],
             {},
+            False,
         ),
         (
-            "show rows where `evil`col` is over 50.5",
-            ["`evil`col`"],
+            f"show rows where {CANARY_COL_BACKTICK} is over 50.5",
+            [CANARY_COL_BACKTICK],
             {},
+            False,
         ),
     ],
     ids=[
-        "count-equality-hostile-col-and-val",
-        "aggregate-equality-backtick-col-and-sql-injection-val",
-        "list-equality-hostile-col-and-val",
+        "count-equality-canary-col-and-val",
+        "aggregate-equality-backtick-col-and-canary-sqli-val",
+        "list-equality-canary-col-and-val",
         "count-comparison-backtick-col",
-        "topn-hostile-col",
+        "topn-canary-col",
         "list-comparison-backtick-col",
     ],
 )
@@ -244,15 +260,16 @@ def test_no_user_text_in_cypher_spy_assertion(
     question: str,
     columns: list[str],
     distinct_map: dict[str, list[str]],
+    expects_value_param: bool,
 ):
     """Rigorous Spy Test: Assert user-supplied hostile strings NEVER appear in the Cypher query.
 
+    Note: covers the deterministic tier only; the LLM tier is guarded by api/guardrail.py (see xfail gaps).
     Column names must ONLY appear through _quote_ident output.
     Filter values must ONLY appear inside the query parameter dictionary.
     """
     def mock_results(cypher: str, params: dict[str, Any]) -> list[dict[str, Any]]:
         if "RETURN DISTINCT" in cypher:
-            # Check which column is requested in distinct
             for col, vals in distinct_map.items():
                 if _quote_ident(col) in cypher:
                     return [{"v": v} for v in vals]
@@ -267,40 +284,89 @@ def test_no_user_text_in_cypher_spy_assertion(
 
     res = try_answer(driver, "csv-graph-db", question, columns)
     assert res is not None, f"Deterministic intent failed to match question: {question}"
-
     assert len(driver.recorded_calls) >= 1
+
+    value_param_found = False
 
     # Check every query executed during intent resolution
     for cypher_str, params_dict in driver.recorded_calls:
-        # 1. Hostile values must NEVER appear anywhere in the cypher query string
+        # 1. Hostile canary values must NEVER appear anywhere in the cypher query string
         for col_vals in distinct_map.values():
             for val in col_vals:
                 assert val not in cypher_str, (
-                    f"CRITICAL VULNERABILITY: Raw hostile value '{val}' leaked into Cypher query: {cypher_str}"
+                    f"CRITICAL VULNERABILITY: Canary value '{val}' leaked into Cypher query: {cypher_str}"
                 )
-                # If this query was the filtered one ($value), it must be passed via params
                 if "$value" in cypher_str:
                     assert params_dict.get("value") == val
+                    value_param_found = True
 
-        # 2. Hostile column names must ONLY appear in cypher as escaped _quote_ident(col)
+        # 2. Hostile column names must ONLY appear in cypher as exact escaped _quote_ident(col)
         for col in columns:
             quoted = _quote_ident(col)
-            # If the column appears in this query, it must be exactly the quoted identifier
             if quoted in cypher_str:
                 # Raw unquoted version must not leak outside backticks
                 if "`" in col:
-                    # e.g., if col was `evil`col`, quoted is ```evil``col```
-                    # Ensure raw unescaped sequence does not appear
                     assert f"r.{col}" not in cypher_str
             else:
-                # If the column wasn't quoted in this query, it must not appear at all
                 assert col not in cypher_str
 
-    # 3. Verify that the primary/final query actually contains the target column quoted
+    # 3. Non-vacuous assertion: verify that value-filtering queries actually executed a parameterized $value query
+    if expects_value_param:
+        assert value_param_found is True, (
+            f"Vacuous test detected! Query was expected to dispatch with $value, but recorded calls were: {driver.recorded_calls}"
+        )
+
+    # 4. Verify that the primary query actually contains the target column formatted via _quote_ident
     final_query = driver.recorded_calls[-1][0]
     matched = _matched_columns(question, columns)
     if matched:
-        assert _quote_ident(matched[0]) in final_query
+        expected_quoted_target = _quote_ident(matched[0])
+        assert expected_quoted_target in final_query, (
+            f"Expected quoted identifier '{expected_quoted_target}' in final query: {final_query}"
+        )
+
+
+@given(
+    col_name=st.text(
+        alphabet=st.characters(blacklist_categories=("Cs",), blacklist_characters=("\x00", "\n", "\r")),  # type: ignore[arg-type]
+        min_size=1,
+        max_size=20,
+    ),
+    filter_val=st.text(
+        alphabet=st.characters(blacklist_categories=("Cs",), blacklist_characters=("\x00", "\n", "\r")),  # type: ignore[arg-type]
+        min_size=1,
+        max_size=30,
+    ),
+)
+@settings(max_examples=30)
+def test_no_user_text_in_cypher_hypothesis(col_name: str, filter_val: str):
+    """Hypothesis property: arbitrary user-supplied column names and values never appear as raw Cypher text.
+
+    Note: covers the deterministic tier only; the LLM tier is guarded by api/guardrail.py (see xfail gaps).
+    """
+    canary_col = f"col_x9f3_{col_name}"
+    canary_val = f"val_x9f3_{filter_val}"
+
+    driver = SpyDriver({
+        "RETURN DISTINCT": [{"v": canary_val}],
+        "toLower($value)": [{"count": 7}],
+    })
+
+    question = f"how many rows have {canary_col} equal to {canary_val}"
+    res = try_answer(driver, "csv-graph-db", question, [canary_col])
+    if res is not None:
+        for cypher_str, params_dict in driver.recorded_calls:
+            # Canary value must never appear in raw query text
+            assert canary_val not in cypher_str, (
+                f"Filter value leaked into Cypher query: {cypher_str}"
+            )
+            if "$value" in cypher_str:
+                assert params_dict.get("value") == canary_val
+            # Column name must appear only through _quote_ident
+            quoted = _quote_ident(canary_col)
+            if quoted in cypher_str and "`" in canary_col:
+                assert f"r.{canary_col}" not in cypher_str
+
 
 
 
@@ -544,4 +610,29 @@ def test_try_answer_unhandled_and_error_handling():
             raise RuntimeError("Database unavailable")
 
     assert try_answer(FailingDriver(), "csv-graph-db", "show row 1", ["amount"]) is None
+
+
+def test_extract_number_deterministic_cases():
+    """Verify _extract_number correctly parses numbers and returns None on non-number input."""
+    assert _extract_number("how many rows over $1,000") == 1000.0
+    assert _extract_number("balance at least +$1,234.56") == 1234.56
+    assert _extract_number("temperature below -50") == -50.0
+    assert _extract_number("count under 0.05") == 0.05
+    assert _extract_number("no number in this query") is None
+    assert _extract_number("a lone - or + sign") is None
+    assert _extract_number("a bare $ sign") is None
+
+
+@given(text=st.text())
+@settings(max_examples=100)
+def test_extract_number_never_raises(text: str):
+    r"""Hypothesis property: _extract_number returns float or None for arbitrary text, never raises.
+
+    Analytical proof: _NUMBER = re.compile(r"[-+]?\$?\d[\d,]*(?:\.\d+)?").
+    Any match stripped of '$' and ',' matches ^[-+]?\d+(\.\d+)?$, which Python's float() always parses.
+    Lines 109-110 in api/chatbot_deterministic.py (except ValueError: return None) are unreachable.
+    """
+    res = _extract_number(text)
+    assert res is None or isinstance(res, float)
+
 
