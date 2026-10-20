@@ -112,102 +112,67 @@ def test_csv_explicit_backtick_header_accepted_today():
     assert rows[0]["`"] == "foo"
 
 
-def test_csv_explicit_10k_char_header_accepted_today():
-    """Explicit test: 10,000-character header is accepted today without truncation."""
+def test_csv_header_over_max_length_rejected():
+    """Column name exceeding MAX_HEADER_LENGTH (128 chars) must be rejected."""
     long_col = "h" * 10000
     raw = f"{long_col},val\nfoo,bar\n".encode("utf-8")
-    rows = parse_and_validate_csv(raw)
-    assert long_col in rows[0]
-    assert rows[0][long_col] == "foo"
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="fix in Phase 1: duplicate headers silently drop earlier columns instead of raising CSVValidationError",
-)
-def test_csv_duplicate_headers_exact_rejected():
-    """Duplicate header names cause DictReader to drop data from earlier columns."""
-    raw = b"name,age,name\nAlice,30,Bob\n"
-    # Today, this passes silently and drops Alice: {'name': 'Bob', 'age': '30'}
-    with pytest.raises(CSVValidationError):
+    with pytest.raises(CSVValidationError, match="column name too long"):
         parse_and_validate_csv(raw)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="fix in Phase 1: duplicate headers differing only by case or whitespace are not rejected",
-)
+def test_csv_duplicate_headers_exact_rejected():
+    """Duplicate header names must raise CSVValidationError (not silently drop earlier columns)."""
+    raw = b"name,age,name\nAlice,30,Bob\n"
+    with pytest.raises(CSVValidationError, match="duplicate column name"):
+        parse_and_validate_csv(raw)
+
+
 def test_csv_duplicate_headers_case_whitespace_rejected():
-    """Headers differing only by case or surrounding whitespace must be rejected to prevent ambiguous property schemas."""
+    """Headers differing only by case or surrounding whitespace must be rejected."""
     raw = b"Name,age, name \nAlice,30,Bob\n"
-    # Today, this produces {'Name': 'Alice', 'age': '30', ' name ': 'Bob'}
-    with pytest.raises(CSVValidationError):
+    with pytest.raises(CSVValidationError, match="duplicate column name"):
         parse_and_validate_csv(raw)
 
 
 # ==============================================================================
 # 3. Reserved Bookkeeping Header Tests (Loader SET r += $row Overwrite Risk)
 # ==============================================================================
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "fix in Phase 1: reserved header 'dataset_id' is accepted by validator; "
-        "loader executes 'ON CREATE SET r += $row', overwriting node dataset_id and destroying dataset isolation"
-    ),
-)
 def test_csv_reserved_header_dataset_id_rejected():
-    """Reserved header 'dataset_id' must be rejected to prevent overwriting internal node ownership."""
+    """Reserved header 'dataset_id' must be rejected (protects loader node ownership)."""
     raw = b"dataset_id,amount\nattacker_id,100\n"
-    # Today, accepted by validator -> loader overwrites r.dataset_id
-    with pytest.raises(CSVValidationError):
+    with pytest.raises(CSVValidationError, match="reserved"):
         parse_and_validate_csv(raw)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "fix in Phase 1: reserved header 'row_index' is accepted by validator; "
-        "loader executes 'ON CREATE SET r += $row', overwriting node row_index and breaking row ordering/idempotency"
-    ),
-)
 def test_csv_reserved_header_row_index_rejected():
-    """Reserved header 'row_index' must be rejected to prevent overwriting internal node index."""
+    """Reserved header 'row_index' must be rejected (protects row ordering / idempotency)."""
     raw = b"row_index,amount\n99999,100\n"
-    # Today, accepted by validator -> loader overwrites r.row_index
-    with pytest.raises(CSVValidationError):
+    with pytest.raises(CSVValidationError, match="reserved"):
         parse_and_validate_csv(raw)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "fix in Phase 1: reserved header '_new' is accepted by validator; "
-        "targets internal loader idempotency marker property"
-    ),
-)
 def test_csv_reserved_header_new_rejected():
-    """Reserved header '_new' must be rejected to protect loader's internal idempotency marker."""
+    """Reserved header '_new' must be rejected (protects loader's idempotency marker)."""
     raw = b"_new,amount\nfalse,100\n"
-    # Today, accepted by validator
-    with pytest.raises(CSVValidationError):
+    with pytest.raises(CSVValidationError, match="reserved"):
         parse_and_validate_csv(raw)
+
+
+def test_csv_reserved_headers_case_insensitive():
+    """Reserved header check must be case-insensitive: Dataset_ID, ROW_INDEX, _NEW are all blocked."""
+    for name in ("Dataset_ID", "ROW_INDEX", "_NEW"):
+        raw = f"{name},amount\n1,100\n".encode()
+        with pytest.raises(CSVValidationError, match="reserved"):
+            parse_and_validate_csv(raw)
 
 
 # ==============================================================================
 # 4. Structural Edge Cases & Unhandled Exception Leaks
 # ==============================================================================
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "fix in Phase 1: ragged row with extra fields produces None key in row dict ({None: ['val3']}) "
-        "instead of raising CSVValidationError"
-    ),
-)
 def test_csv_ragged_rows_extra_fields_rejected():
     """Ragged row with more columns than header must raise CSVValidationError."""
     raw = b"col1,col2\nval1,val2,val3\n"
-    # Today, DictReader creates {None: ['val3']}, violating dict[str, str | None] and corrupting JSON serialization
-    with pytest.raises(CSVValidationError):
+    with pytest.raises(CSVValidationError, match="ragged row"):
         parse_and_validate_csv(raw)
 
 
@@ -238,14 +203,10 @@ def test_csv_bare_cr_in_unquoted_field_raises_csv_validation_error():
         parse_and_validate_csv(raw)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="fix in Phase 1: NUL bytes (\\x00) in CSV header or values must be rejected by CSVValidationError",
-)
 def test_csv_nul_byte_rejected():
-    """NUL byte in CSV header or field values must raise CSVValidationError."""
+    """NUL byte in CSV header must raise CSVValidationError (control-character policy)."""
     raw = b"a\x00b,col2\nval1,val2\n"
-    with pytest.raises(CSVValidationError):
+    with pytest.raises(CSVValidationError, match="control character"):
         parse_and_validate_csv(raw)
 
 
