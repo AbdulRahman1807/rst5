@@ -13,7 +13,7 @@ This document tracks phase progression, architectural decisions, verified baseli
 | **Phase 1: Step 1** | Behavior-preserving extraction: `guardrail.py` & `ingest_validation.py` | **COMPLETED** | `a553342` |
 | **Phase 1: Step 2** | Table-driven guardrail test suite (`tests/test_guardrail.py`) with strict `xfail` gap analysis | **COMPLETED** | 39 passed, 17 xfailed (`strict=True`), 100% guardrail coverage |
 | **Phase 1: Step 3** | Unit tests for deterministic chatbot & loader with mock Neo4j | **COMPLETED** | 57 passed, 2 xfailed (`strict=True`), 99% chatbot / 99% loader coverage |
-| **Phase 1: Step 4** | Hypothesis property-based testing on `parse_and_validate_csv` | Pending | — |
+| **Phase 1: Step 4** | Hypothesis property-based testing on `parse_and_validate_csv` | **COMPLETED** | 10 passed, 12 xfailed (`strict=True`), 93% `ingest_validation.py` coverage |
 
 | **Phase 1: Step 5** | Port bash scripts (`verify_idempotency`, `test_hostile_input`) to pytest (`@pytest.mark.e2e`) | Pending | — |
 | **Phase 1: Step 6** | Testcontainers integration (Neo4j idempotency replay, Kafka roundtrip) | Pending | — |
@@ -201,5 +201,57 @@ The `chatbot_deterministic.py` docstring lists 12 logical user intents, implemen
   **Low exposure today** because the only producer in the architecture is `api/main.py`, which serializes row dictionaries into valid JSON using Python's standard `json.dumps()`. Malformed messages could only enter the topic via manual developer debugging, out-of-band Kafka tooling, or future external producers.
 - **Target Milestone for Fix**:
   Relabeled the strict xfails in `tests/test_loader.py` to `reason="fix in Phase 5: DLQ / poison pill: ..."`. The correct architectural remediation is a dead-letter topic (DLQ) in Phase 5, rather than a premature patch in Phase 2 (which is dedicated to guardrails).
+
+---
+
+## 6. Phase 1 Step 4 — Hypothesis Property-Based Testing on CSV Ingestion (`parse_and_validate_csv`)
+
+Implemented property-based fuzzing and adversarial edge-case testing in `tests/test_csv_hypothesis.py` (22 tests: 10 passed, 12 strictly xfailed).
+Branch coverage on `api/ingest_validation.py` increased from 18% to **93%** (20 stmts, 1 missed line 27 defensive check for `reader.fieldnames is None`, 8 branches, 1 partial branch).
+
+### A. Universal Invariants & Fuzzing Property
+- **Property Tested**: `parse_and_validate_csv(raw: bytes)` must strictly return `list[dict[str, str | None]]` or raise `CSVValidationError`. It must NEVER leak raw unhandled exceptions such as `_csv.Error`, `UnicodeDecodeError`, `KeyError`, or `ValueError`.
+- **Finding (`xfail(strict=True)`)**: `test_csv_hypothesis_only_csv_validation_error_or_rows`
+  Arbitrary binary fuzzing uncovers unhandled `_csv.Error` leaks:
+  1. Bare CR (`\r`) in unquoted fields (`b"a,b\n1,foo\rbar\n"`) crashes with `_csv.Error: new-line character seen in unquoted field - do you need to open the file with newline=''?`.
+  2. Oversized fields exceeding Python's default limit (131,072 bytes) crash with `_csv.Error: field larger than field limit (131072)`.
+  *Impact*: Because `api/main.py` only catches `CSVValidationError`, any unhandled `_csv.Error` causes FastAPI to return an unhandled `500 Internal Server Error` instead of a clean `400 Bad Request`.
+
+### B. Encodings & Line Endings
+- **UTF-8 BOM Corruption (`xfail(strict=True)`)**: `test_csv_utf8_bom_stripped`
+  Payload `b"\xef\xbb\xbfname,age\nAlice,30\n"` is decoded with `"utf-8"` instead of `"utf-8-sig"`. The leading Byte Order Mark is preserved as `\ufeffname`, corrupting the first column header and downstream Cypher property mapping.
+- **Line Endings (PASSED)**: `test_csv_crlf_lf_mixed_endings_accepted` proves CRLF (`\r\n`), LF (`\n`), and mixed line endings are parsed identically into normalized row dictionaries.
+- **Quoted Newlines (PASSED)**: `test_csv_quoted_newlines_accepted` proves multi-line quoted fields preserve internal newlines accurately.
+- **Non-UTF-8 Sequences (PASSED)**: `test_csv_non_utf8_bytes_raises_validation_error` traps invalid byte sequences as `CSVValidationError("file is not valid UTF-8 text/CSV")`.
+
+### C. Structural Gaps (Ragged Rows, Huge Fields, NUL Bytes)
+- **Ragged Rows with Extra Fields (`xfail(strict=True)`)**: `test_csv_ragged_rows_extra_fields_rejected`
+  For rows with more columns than the header (e.g., `b"a,b\n1,2,3\n"`), Python's `csv.DictReader` assigns extra values to the key `None`: `{'a': '1', 'b': '2', None: ['3']}`.
+  *Impact*: Violates the function's return type signature (`list[dict[str, str | None]]`). When serialized via `json.dumps()`, `None` becomes `"null"`, injecting unexpected properties into the Neo4j node.
+- **Ragged Rows with Missing Fields (`xfail(strict=True)`)**: `test_csv_ragged_rows_short_rows_rejected`
+  For rows with fewer columns than the header (e.g., `b"a,b,c\n1,2\n"`), `csv.DictReader` silently fills missing fields with `None`: `{'a': '1', 'b': '2', 'c': None}` without validation or error.
+- **NUL Bytes (`xfail(strict=True)`)**: `test_csv_nul_byte_rejected`
+  NUL bytes (`\x00`) in headers or data rows are accepted by Python 3.11's CSV parser and enter dictionary keys/values unescaped.
+
+### D. Header Edge Cases & Loader `SET r += $row` Overwrite Risk
+The loader executes the following Cypher query on ingest (`loader/main.py:30-32`):
+```cypher
+MERGE (r:Row {dataset_id: $dataset_id, row_index: $row_index})
+  ON CREATE SET r += $row, r._new = true
+  ON MATCH SET r._new = false
+```
+Here, `$row` is the exact row dictionary emitted by `parse_and_validate_csv`.
+
+| Header Tested | Current Behavior | Loader Overwrite & Architecture Impact | Test Status |
+|---|---|---|---|
+| `dataset_id` | Accepted without error | **CRITICAL IDEMPOTENCY & ISOLATION HOLE**: `r += $row` overwrites `r.dataset_id`. Downstream queries filtering by `WHERE r.dataset_id = $dataset_id` (Phase 2 isolation) will not find the row. On re-upload, `MERGE (r:Row {dataset_id: $dataset_id, ...})` creates duplicate nodes, destroying idempotency. | `xfail(strict=True)` |
+| `row_index` | Accepted without error | **ORDERING HOLE**: `r += $row` overwrites `r.row_index`, corrupting row lookups (`show row 0`) and causing duplicate nodes on replay. | `xfail(strict=True)` |
+| `_new` | Accepted without error | Targets loader's internal idempotency marker property. | `xfail(strict=True)` |
+| Empty string `""` | Rejected (`malformed header row`) | Safe by construction. Line 28 rejects `f.strip() == ""`. | **PASSED** |
+| Backtick `` ` `` | Accepted without error | Enters Neo4j as property name `` ` ``. Handled safely in deterministic tier via `_quote_ident("`") -> "````"`, but risky for LLM tier. | **PASSED** |
+| 10k-char header | Accepted without error | Creates 10,000-character Neo4j property name, stressing database schema and memory. | **PASSED** |
+| Duplicate headers (exact) | Accepted without error | **SILENT DATA LOSS**: `csv.DictReader` silently keeps the last value for duplicate headers (e.g. `name,age,name\nAlice,30,Bob` produces `{'name': 'Bob', 'age': '30'}`; `Alice` is permanently dropped). | `xfail(strict=True)` |
+| Duplicate headers (case/space) | Accepted without error | `Name, name ` creates ambiguous, near-identical property names. | `xfail(strict=True)` |
+
 
 
