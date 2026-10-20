@@ -31,7 +31,7 @@ clean:
 	rm -f .coverage
 
 test:
-	$(PYTEST) tests/ -v --cov=api --cov=loader --cov-report=term-missing
+	$(PYTEST) tests/ -v --cov=api --cov=loader --cov-branch --cov-report=term-missing
 
 eval:
 	$(PYTHON) -m eval.evaluate
