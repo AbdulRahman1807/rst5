@@ -109,8 +109,9 @@ def test_loader_processes_valid_message_sends_merge_row():
     session = MockNeo4jSession()
     driver = MockNeo4jDriver(session)
 
-    with patch("loader.main.connect_kafka", return_value=consumer), patch(
-        "loader.main.connect_neo4j", return_value=driver
+    with (
+        patch("loader.main.connect_kafka", return_value=consumer),
+        patch("loader.main.connect_neo4j", return_value=driver),
     ):
         with pytest.raises(ExitLoopSentinel):
             loader_main.main()
@@ -152,8 +153,9 @@ def test_loader_merge_row_failure_triggers_mark_failed():
     session = MockNeo4jSession(fail_query_pattern="MERGE (r:Row")
     driver = MockNeo4jDriver(session)
 
-    with patch("loader.main.connect_kafka", return_value=consumer), patch(
-        "loader.main.connect_neo4j", return_value=driver
+    with (
+        patch("loader.main.connect_kafka", return_value=consumer),
+        patch("loader.main.connect_neo4j", return_value=driver),
     ):
         with pytest.raises(ExitLoopSentinel):
             loader_main.main()
@@ -171,6 +173,46 @@ def test_loader_merge_row_failure_triggers_mark_failed():
         "filename": "corrupted.csv",
         "uploaded_at": "2026-10-20T10:00:00Z",
         "rows_total": 10,
+        "reason": "load_error",
+    }
+
+
+def test_loader_preflagged_failed_row_routes_to_mark_failed_with_reason():
+    """Verify that a message with failed=True bypasses MERGE_ROW and directly triggers MARK_FAILED."""
+    sample_payload = {
+        "dataset_id": "sha256_dataset_004",
+        "row_index": 2,
+        "filename": "broken.csv",
+        "uploaded_at": "2026-10-20T10:00:00Z",
+        "rows_total": 6,
+        "failed": True,
+        "reason": "short_row",
+        "source_line": 4,
+        "row": {},
+    }
+    raw_bytes = json.dumps(sample_payload).encode("utf-8")
+    consumer = MockConsumer([MockKafkaMessage(value=raw_bytes)])
+    session = MockNeo4jSession()
+    driver = MockNeo4jDriver(session)
+
+    with (
+        patch("loader.main.connect_kafka", return_value=consumer),
+        patch("loader.main.connect_neo4j", return_value=driver),
+    ):
+        with pytest.raises(ExitLoopSentinel):
+            loader_main.main()
+
+    # Must record exactly 1 query: MARK_FAILED (MERGE_ROW must NOT be executed)
+    assert len(session.recorded_runs) == 1
+    cypher, params = session.recorded_runs[0]
+    assert cypher == loader_main.MARK_FAILED
+    assert params == {
+        "dataset_id": "sha256_dataset_004",
+        "row_index": 2,
+        "filename": "broken.csv",
+        "uploaded_at": "2026-10-20T10:00:00Z",
+        "rows_total": 6,
+        "reason": "short_row",
     }
 
 
@@ -190,8 +232,9 @@ def test_loader_both_merge_and_mark_failed_raise_handled_gracefully():
     session = MockNeo4jSession(fail_query_pattern="MERGE")
     driver = MockNeo4jDriver(session)
 
-    with patch("loader.main.connect_kafka", return_value=consumer), patch(
-        "loader.main.connect_neo4j", return_value=driver
+    with (
+        patch("loader.main.connect_kafka", return_value=consumer),
+        patch("loader.main.connect_neo4j", return_value=driver),
     ):
         # Must catch e2 and not crash the loop before reaching ExitLoopSentinel
         with pytest.raises(ExitLoopSentinel):
@@ -214,8 +257,9 @@ def test_loader_skips_none_messages_and_errors():
     session = MockNeo4jSession()
     driver = MockNeo4jDriver(session)
 
-    with patch("loader.main.connect_kafka", return_value=consumer), patch(
-        "loader.main.connect_neo4j", return_value=driver
+    with (
+        patch("loader.main.connect_kafka", return_value=consumer),
+        patch("loader.main.connect_neo4j", return_value=driver),
     ):
         with pytest.raises(ExitLoopSentinel):
             loader_main.main()
@@ -240,8 +284,9 @@ def test_loader_survives_malformed_json():
     session = MockNeo4jSession()
     driver = MockNeo4jDriver(session)
 
-    with patch("loader.main.connect_kafka", return_value=consumer), patch(
-        "loader.main.connect_neo4j", return_value=driver
+    with (
+        patch("loader.main.connect_kafka", return_value=consumer),
+        patch("loader.main.connect_neo4j", return_value=driver),
     ):
         # In current production code, this raises json.JSONDecodeError instead of ExitLoopSentinel
         with pytest.raises(ExitLoopSentinel):
@@ -260,8 +305,9 @@ def test_loader_survives_missing_required_fields():
     session = MockNeo4jSession()
     driver = MockNeo4jDriver(session)
 
-    with patch("loader.main.connect_kafka", return_value=consumer), patch(
-        "loader.main.connect_neo4j", return_value=driver
+    with (
+        patch("loader.main.connect_kafka", return_value=consumer),
+        patch("loader.main.connect_neo4j", return_value=driver),
     ):
         # In current production code, this raises KeyError instead of ExitLoopSentinel
         with pytest.raises(ExitLoopSentinel):
@@ -289,7 +335,6 @@ def test_connect_kafka_retry_and_success():
         mock_consumer.subscribe.assert_called_once_with([loader_main.KAFKA_TOPIC])
 
 
-
 def test_connect_neo4j_retry_and_success():
     """Verify that connect_neo4j retries on ServiceUnavailable and returns driver upon success."""
     mock_driver = MagicMock()
@@ -299,7 +344,10 @@ def test_connect_neo4j_retry_and_success():
         None,
     ]
 
-    with patch("loader.main.GraphDatabase.driver", return_value=mock_driver), patch("loader.main.time.sleep") as mock_sleep:
+    with (
+        patch("loader.main.GraphDatabase.driver", return_value=mock_driver),
+        patch("loader.main.time.sleep") as mock_sleep,
+    ):
         driver = loader_main.connect_neo4j()
         assert driver == mock_driver
         assert mock_driver.verify_connectivity.call_count == 2
