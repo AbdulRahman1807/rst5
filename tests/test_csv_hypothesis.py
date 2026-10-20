@@ -263,22 +263,43 @@ def test_csv_nul_byte_rejected():
 # ==============================================================================
 # 5. Hypothesis Fuzzing Property Test
 # ==============================================================================
-@pytest.mark.xfail(
-    strict=True,
-    reason="fix in Phase 1: arbitrary binary fuzzing leaks unhandled _csv.Error on bare CR or huge fields",
-)
 @given(raw=st.binary(max_size=3000))
 @settings(max_examples=100)
 def test_csv_hypothesis_only_csv_validation_error_or_rows(raw: bytes):
-    """Hypothesis property: parse_and_validate_csv only ever returns list[dict] or raises CSVValidationError.
+    """Hypothesis property: parse_and_validate_csv strictly returns ParsedCSV or raises CSVValidationError.
 
-    It must NEVER raise raw unhandled _csv.Error, UnicodeDecodeError, or any other exception.
+    On the success path:
+    - Headers and keys are non-empty strings and contain no reserved names.
+    - len(parsed) >= 1, matching the number of data rows.
+    - At least 1 good row exists (files with 0 good rows raise CSVValidationError).
+    - Failed rows carry row={} and a valid reason from FailureReason.
+    - Good rows carry dict with keys == headers and string values.
     """
-    res = parse_and_validate_csv(raw)
-    assert isinstance(res, list)
-    assert len(res) > 0
-    for row in res:
-        assert isinstance(row, dict)
-        for k in row.keys():
-            assert isinstance(k, str), f"Row key must be str, got {type(k)}: {k}"
-            assert len(k.strip()) > 0
+    try:
+        parsed = parse_and_validate_csv(raw)
+    except CSVValidationError:
+        return
+
+    assert len(parsed) >= 1
+    good_count = 0
+    for parsed_row in parsed:
+        assert isinstance(parsed_row.index, int)
+        assert isinstance(parsed_row.source_line, int)
+        if parsed_row.failed:
+            assert parsed_row.row == {}
+            assert parsed_row.reason in (
+                "extra_fields",
+                "short_row",
+                "control_char",
+            )
+        else:
+            good_count += 1
+            assert parsed_row.reason is None
+            assert isinstance(parsed_row.row, dict)
+            assert set(parsed_row.row.keys()) == set(parsed.headers)
+            for k, v in parsed_row.row.items():
+                assert isinstance(k, str) and len(k.strip()) > 0
+                assert k.lower() not in ("dataset_id", "row_index", "_new")
+                assert isinstance(v, str)
+
+    assert good_count >= 1
