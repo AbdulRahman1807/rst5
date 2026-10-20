@@ -169,23 +169,34 @@ def test_csv_reserved_headers_case_insensitive():
 # ==============================================================================
 # 4. Structural Edge Cases & Unhandled Exception Leaks
 # ==============================================================================
-def test_csv_ragged_rows_extra_fields_rejected():
-    """Ragged row with more columns than header must raise CSVValidationError."""
+def test_csv_ragged_rows_extra_fields_classified_failed():
+    """Ragged row with more columns than header is classified as failed (reason='extra_fields')."""
     raw = b"col1,col2\nval1,val2,val3\n"
-    with pytest.raises(CSVValidationError, match="ragged row"):
-        parse_and_validate_csv(raw)
+    rows = parse_and_validate_csv(raw)
+    assert len(rows) == 1
+    assert rows[0].failed is True
+    assert rows[0].reason == "extra_fields"
+    assert rows[0].row == {}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="fix in Phase 1: ragged row with short rows introduces None values without raising CSVValidationError",
-)
-def test_csv_ragged_rows_short_rows_rejected():
-    """Ragged row with fewer columns than header must raise CSVValidationError."""
+def test_csv_ragged_rows_short_rows_classified_failed():
+    """Ragged row with fewer columns than header is classified as failed (reason='short_row')."""
     raw = b"col1,col2,col3\nval1,val2\n"
-    # Today, DictReader fills missing keys with None: {'col1': 'val1', 'col2': 'val2', 'col3': None}
-    with pytest.raises(CSVValidationError):
-        parse_and_validate_csv(raw)
+    rows = parse_and_validate_csv(raw)
+    assert len(rows) == 1
+    assert rows[0].failed is True
+    assert rows[0].reason == "short_row"
+    assert rows[0].row == {}
+
+
+def test_csv_control_char_in_value_classified_failed():
+    """NUL or control character in cell value is classified as failed (reason='control_char')."""
+    raw = b"col1,col2\nval1,a\x00b\n"
+    rows = parse_and_validate_csv(raw)
+    assert len(rows) == 1
+    assert rows[0].failed is True
+    assert rows[0].reason == "control_char"
+    assert rows[0].row == {}
 
 
 def test_csv_huge_field_raises_csv_validation_error():
@@ -203,7 +214,7 @@ def test_csv_bare_cr_in_unquoted_field_raises_csv_validation_error():
         parse_and_validate_csv(raw)
 
 
-def test_csv_nul_byte_rejected():
+def test_csv_nul_byte_in_header_rejected():
     """NUL byte in CSV header must raise CSVValidationError (control-character policy)."""
     raw = b"a\x00b,col2\nval1,val2\n"
     with pytest.raises(CSVValidationError, match="control character"):
@@ -213,10 +224,6 @@ def test_csv_nul_byte_rejected():
 # ==============================================================================
 # 5. Hypothesis Fuzzing Property Test
 # ==============================================================================
-@pytest.mark.xfail(
-    strict=True,
-    reason="fix in Phase 1: arbitrary binary fuzzing leaks unhandled _csv.Error on bare CR or huge fields",
-)
 @given(raw=st.binary(max_size=3000))
 @settings(max_examples=100)
 def test_csv_hypothesis_only_csv_validation_error_or_rows(raw: bytes):
@@ -224,11 +231,19 @@ def test_csv_hypothesis_only_csv_validation_error_or_rows(raw: bytes):
 
     It must NEVER raise raw unhandled _csv.Error, UnicodeDecodeError, or any other exception.
     """
-    res = parse_and_validate_csv(raw)
+    try:
+        res = parse_and_validate_csv(raw)
+    except CSVValidationError:
+        return
     assert isinstance(res, list)
     assert len(res) > 0
     for row in res:
         assert isinstance(row, dict)
-        for k in row.keys():
-            assert isinstance(k, str), f"Row key must be str, got {type(k)}: {k}"
-            assert len(k.strip()) > 0
+        if not row.failed:
+            for k in row.keys():
+                assert isinstance(k, str), f"Row key must be str, got {type(k)}: {k}"
+                assert len(k.strip()) > 0
+        else:
+            assert row.row == {}
+            assert row.reason in {"extra_fields", "short_row", "control_char"}
+
