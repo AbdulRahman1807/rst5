@@ -63,6 +63,7 @@ def connect_kafka() -> Consumer:
             "group.id": "loader",
             "auto.offset.reset": "earliest",
             "enable.auto.commit": True,
+            "topic.metadata.refresh.interval.ms": 1000,
         }
     )
     while True:

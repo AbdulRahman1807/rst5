@@ -260,3 +260,52 @@ class ParsedCSV:
   Replace the dual-label architecture with a unified single-node design:
   - Each record creates a single `(:Row {dataset_id: $dataset_id, row_index: $row_index})` with a `state` property (`state: "loaded"` or `state: "failed"`).
   - Dataset counters (`rows_loaded`, `rows_failed`) should be derived by querying `count(r)` grouped by state, rather than incrementally mutating separate counter properties on the `Dataset` node across asynchronous transactions.
+
+---
+
+## 7. Step 5: Isolated End-to-End Integration Suite (`make test-e2e`)
+
+### A. Isolated Docker Compose Project Architecture
+- Project Name: `COMPOSE_PROJECT_NAME=rst5-e2e`.
+- Port Isolation: Mapped to independent host ports to prevent collisions with any running dev services:
+  - API: `8001` (dev default `8000`)
+  - Neo4j HTTP: `7475` (dev default `7474`)
+  - Neo4j Bolt: `7688` (dev default `7687`)
+  - Kafka: `9093` (dev default `9092`)
+  - UI: `3001` (dev default `3000`)
+- Volume Isolation: Named volumes scoped to project (`rst5-e2e_kafka_data`, `rst5-e2e_neo4j_data`, `rst5-e2e_neo4j_logs`). Dev stack data volumes (`rst5-1_*`) are never accessed or modified.
+- Lifecycle: `make test-e2e` executes `docker compose up -d --build --wait`, runs pytest on `tests/test_e2e.py -m e2e`, and cleanly tears down with `trap 'COMPOSE_PROJECT_NAME=rst5-e2e docker compose down -v' EXIT`.
+
+### B. Container Resource Sizing & Fast Healthchecks
+- **JVM Heap Limits**:
+  - Kafka: `KAFKA_JVM_PERFORMANCE_OPTS: "-Xms128m -Xmx256m"`.
+  - Neo4j: `NEO4J_server_memory_heap_initial__size: 256m`, `NEO4J_server_memory_heap_max__size: 512m`, `NEO4J_server_memory_pagecache_size: 128m`.
+  Prevents memory exhaustion and swap storms within Docker Desktop's resource constraints.
+- **Fast Non-JVM Healthchecks**:
+  - Kafka: `/usr/bin/nc -z localhost 9092 || exit 1` (instant socket probe, avoids spawning a full Java VM every 5s).
+  - Neo4j: `wget -q --spider http://127.0.0.1:7474 || exit 1` (`retries: 60`, `start_period: 40s`).
+- **Librdkafka Topic Discovery Fix**:
+  Configured `"topic.metadata.refresh.interval.ms": 1000` in `loader/main.py`. Without this setting, librdkafka defaults to 300,000 ms (5 minutes) before re-checking for topics that did not exist at consumer startup, which previously delayed ingestion on fresh brokers.
+
+### C. Test Specifications & Ported Bash Scripts
+All bash scripts ported to `tests/test_e2e.py` under marker `@pytest.mark.e2e`:
+1. **Hostile Input Checklist (`test_e2e_hostile_input_checklist`)**:
+   - HTTP 400 assertions for `empty.csv`, `header_only.csv`, `not_a_csv.txt`, `all_ragged.csv`.
+   - Structural refusal check before upload: `grounded: bool = False`, `cypher: None`, `answer: str`.
+   - Structural refusal check on unanswerable question ("What is the capital of France?"): `grounded: False`, `cypher: None`.
+2. **Replay & Idempotency Proof (`test_e2e_replay_idempotency_and_status`)**:
+   - Ingest `small_clean.csv` and `broken.csv` 3 times sequentially on empty stack.
+   - Polls `/status` until `status == "complete"` before querying chat.
+   - Status counters stay strictly constant across all 3 passes:
+     - `small_clean.csv`: `rows_total=15, rows_loaded=15, rows_failed=0`.
+     - `broken.csv`: `rows_total=6, rows_loaded=2, rows_failed=4`.
+   - Direct Neo4j assertions via driver:
+     - `:Dataset` node count: strictly 2.
+     - `:Row` node count: strictly 17 (15 clean + 2 loaded from broken).
+     - `:FailedRow` node count: strictly 4.
+   - Chat query `How many rows are there?`: returns `grounded: True`, `cypher: str`, `result: [{'count': 17}]`.
+3. **Quoted Newlines and Tabs End-to-End (`test_e2e_quoted_newline_and_tab_cells_load_cleanly`)**:
+   - Ingests CSV with cell containing quoted newline (`"123 Main St\nSuite 400"`) and tab (`"good\taccount"`).
+   - Ingestion completes with `rows_loaded=1, rows_failed=0`.
+   - Direct Neo4j inspection verifies node properties preserve exact multiline and tab formatting.
+
