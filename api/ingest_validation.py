@@ -177,8 +177,13 @@ def parse_and_validate_csv(raw: bytes) -> ParsedCSV:
     Never raises raw :exc:`csv.Error`, :exc:`UnicodeDecodeError`, or
     :exc:`KeyError` — these are always wrapped in CSVValidationError.
 
-    Blank lines between data rows are skipped and not counted toward rows_total.
-    row_index is the 0-based index assigned strictly to non-blank records.
+    Blank lines between data rows (completely empty lines) are skipped and not counted toward rows_total.
+    A whitespace-only data line in a multi-column file is NOT treated as blank by csv.reader
+    (it parses as a single-element record like ['   ']), so it is classified as a failed row
+    with reason 'short_row'.
+
+    row_index is the 0-based sequential index assigned strictly to non-blank records.
+    source_line is the 1-based line number on which the record ENDS (per csv.reader.line_num).
     """
     if not raw:
         raise CSVValidationError("empty file")

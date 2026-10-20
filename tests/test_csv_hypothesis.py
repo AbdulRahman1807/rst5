@@ -19,7 +19,13 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from api.ingest_validation import CSVValidationError, parse_and_validate_csv
+from api.ingest_validation import (
+    MAX_COLUMN_COUNT,
+    CSVValidationError,
+    ParsedRow,
+    _validate_headers,
+    parse_and_validate_csv,
+)
 
 
 # ==============================================================================
@@ -303,3 +309,106 @@ def test_csv_hypothesis_only_csv_validation_error_or_rows(raw: bytes):
                 assert isinstance(v, str)
 
     assert good_count >= 1
+
+
+# ==============================================================================
+# 6. Branch Coverage & Edge-Case Tests (ParsedRow, Blank/Whitespace, Limits)
+# ==============================================================================
+def test_parsed_row_dict_methods_and_equality():
+    """Exercise ParsedRow dict-like interface and equality branches."""
+    row = ParsedRow(
+        index=0,
+        row={"name": "Alice", "city": "Paris"},
+        failed=False,
+        reason=None,
+        source_line=2,
+    )
+    assert set(row.keys()) == {"name", "city"}
+    assert set(row.values()) == {"Alice", "Paris"}
+    assert set(row.items()) == {("name", "Alice"), ("city", "Paris")}
+    assert row.get("name") == "Alice"
+    assert row.get("missing", "default") == "default"
+    assert "name" in row
+    assert row["city"] == "Paris"
+
+    # __eq__ with dict
+    assert row == {"name": "Alice", "city": "Paris"}
+    # __eq__ with identical ParsedRow
+    identical = ParsedRow(index=0, row={"name": "Alice", "city": "Paris"}, failed=False, reason=None, source_line=2)
+    assert row == identical
+    # __eq__ with non-dict non-ParsedRow
+    assert (row == 42) is False
+    assert (row == "Alice") is False
+
+
+def test_validate_headers_too_many_columns():
+    """CSVs with more than MAX_COLUMN_COUNT (100) columns must be rejected."""
+    headers = [f"col_{i}" for i in range(MAX_COLUMN_COUNT + 1)]
+    csv_bytes = (",".join(headers) + "\n" + ",".join(["1"] * len(headers)) + "\n").encode("utf-8")
+    with pytest.raises(CSVValidationError, match=r"too many columns"):
+        parse_and_validate_csv(csv_bytes)
+
+
+def test_validate_headers_whitespace_or_none_direct():
+    """_validate_headers raises when an element is None or empty/whitespace."""
+    with pytest.raises(CSVValidationError, match="malformed header row"):
+        _validate_headers(["valid", "   "])
+    with pytest.raises(CSVValidationError, match="malformed header row"):
+        _validate_headers(["valid", None])  # type: ignore[list-item]
+
+
+def test_csv_blank_data_lines_skipped_and_not_counted():
+    """Completely blank data lines (empty strings) are skipped and not counted in row_index."""
+    csv_bytes = b"col1,col2\nval1,val2\n\nval3,val4\n\n"
+    res = parse_and_validate_csv(csv_bytes)
+    assert len(res.rows) == 2
+    assert res.rows[0].index == 0
+    assert res.rows[0].row == {"col1": "val1", "col2": "val2"}
+    assert res.rows[1].index == 1
+    assert res.rows[1].row == {"col1": "val3", "col2": "val4"}
+
+
+def test_csv_whitespace_only_data_line_is_short_row():
+    """A whitespace-only data line in a multi-column file is NOT blank to csv.reader.
+
+    csv.reader parses '   \\n' as ['   '] (1-element record).
+    In a 2-column file, len(['   ']) < 2, so it is routed as failed with reason 'short_row'.
+    """
+    csv_bytes = b"col1,col2\n   \nval1,val2\n"
+    res = parse_and_validate_csv(csv_bytes)
+    assert len(res.rows) == 2
+    # Row 0: whitespace line -> short_row failure
+    assert res.rows[0].index == 0
+    assert res.rows[0].failed is True
+    assert res.rows[0].reason == "short_row"
+    assert res.rows[0].row == {}
+
+    # Row 1: valid line -> good row
+    assert res.rows[1].index == 1
+    assert res.rows[1].failed is False
+    assert res.rows[1].row == {"col1": "val1", "col2": "val2"}
+
+
+def test_csv_value_control_char_routes_to_failed():
+    """Data rows containing value control characters (NUL/C0 except \\t, \\n, \\r) are marked failed."""
+    # Line 2 has \x01 (SOH); Line 3 is valid
+    csv_bytes = b"col1,col2\nval1,bad\x01data\nval2,good\n"
+    res = parse_and_validate_csv(csv_bytes)
+    assert len(res.rows) == 2
+    assert res.rows[0].failed is True
+    assert res.rows[0].reason == "control_char"
+    assert res.rows[0].row == {}
+
+    assert res.rows[1].failed is False
+    assert res.rows[1].row == {"col1": "val2", "col2": "good"}
+
+
+def test_csv_source_line_ends_on_multiline_record():
+    """source_line must report the line on which the record ENDS."""
+    csv_bytes = b'col1,col2\n"line 2\nline 3",val2\ngood1,good2\n'
+    res = parse_and_validate_csv(csv_bytes)
+    assert len(res.rows) == 2
+    # The multiline quoted record starts at line 2 and ends on line 3
+    assert res.rows[0].source_line == 3
+    # The next record is on line 4
+    assert res.rows[1].source_line == 4

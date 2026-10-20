@@ -228,10 +228,12 @@ class ParsedCSV:
    - Maximum file size (> 10 MB).
    - **Zero good rows** ("no loadable rows"): If every data row in the CSV is invalid/ragged, the entire upload is rejected with HTTP 400.
 2. **Per-Row Routing (Option B)**:
-   - Blank data lines are skipped and omitted from row counting.
+   - Blank data lines (completely empty lines) are skipped and omitted from row counting.
+   - **Whitespace-Only Data Lines**: In a multi-column file, a line of pure whitespace (e.g., `"   \n"`) is NOT treated as blank by `csv.reader` (it parses as a 1-element record `['   ']`). Because its width is less than the header width, it is classified as a failed row with reason `short_row`.
    - `row_index` is a 0-based sequential index among non-blank records.
+   - `source_line` is the 1-based physical line number on which the record **ENDS** (per `csv.reader.line_num`; for multiline quoted records, this is the closing line).
    - **Ragged Rows (Extra Fields)**: Marked `failed=True`, `reason="extra_fields"`, `row={}`, `source_line=line_no`.
-   - **Ragged Rows (Short Rows)**: Marked `failed=True`, `reason="missing_fields"`, `row={}`, `source_line=line_no`.
+   - **Ragged Rows (Short Rows)**: Marked `failed=True`, `reason="short_row"`, `row={}`, `source_line=line_no`.
    - **Value Control Characters**: Values containing NUL or C0 controls *except* `\t`, `\n`, `\r` are marked `failed=True`, `reason="control_char"`. (Tabs and newlines inside quoted values are valid and load).
    - Failed rows always have `row={}`. A `None` key is never created or published to Kafka.
 
