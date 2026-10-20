@@ -229,7 +229,7 @@ def test_loader_skips_none_messages_and_errors():
 # ==============================================================================
 @pytest.mark.xfail(
     strict=True,
-    reason="fix in Phase 2: malformed JSON in loader/main.py crashes consumer loop with unhandled JSONDecodeError",
+    reason="fix in Phase 5: DLQ / poison pill: malformed JSON in loader/main.py crashes consumer loop with unhandled JSONDecodeError",
 )
 def test_loader_survives_malformed_json():
     """Bug reproduction: malformed JSON crashes consumer loop because json.loads is outside try/except.
@@ -250,7 +250,7 @@ def test_loader_survives_malformed_json():
 
 @pytest.mark.xfail(
     strict=True,
-    reason="fix in Phase 2: missing required fields ('dataset_id' or 'row_index') raises unhandled KeyError in consumer loop",
+    reason="fix in Phase 5: DLQ / poison pill: missing required fields ('dataset_id' or 'row_index') raises unhandled KeyError in consumer loop",
 )
 def test_loader_survives_missing_required_fields():
     """Bug reproduction: missing dataset_id or row_index crashes consumer loop with unhandled KeyError."""
