@@ -1,19 +1,29 @@
-import csv
 import hashlib
-import io
 import json
 import logging
 import os
 import time
 
-from confluent_kafka import Producer, KafkaException
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from confluent_kafka import KafkaException, Producer
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from neo4j import GraphDatabase
-from neo4j.exceptions import ServiceUnavailable, AuthError
+from neo4j.exceptions import AuthError, ServiceUnavailable
 
-import analytics
-import chatbot
+try:
+    import analytics
+except ImportError:
+    from api import analytics
+
+try:
+    import chatbot
+except ImportError:
+    from api import chatbot
+
+try:
+    from ingest_validation import CSVValidationError, parse_and_validate_csv
+except ImportError:
+    from api.ingest_validation import CSVValidationError, parse_and_validate_csv
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("api")
@@ -23,6 +33,7 @@ NEO4J_URI = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.environ["NEO4J_PASSWORD"]
 NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "csv-graph-db")
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 KAFKA_TOPIC = "csv-rows"
 
@@ -84,28 +95,16 @@ def health():
 @app.post("/ingest", status_code=202)
 async def ingest(file: UploadFile = File(...)):
     raw = await file.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="empty file")
     if not (file.filename or "").lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="file must be a .csv")
 
-    dataset_id = hashlib.sha256(raw).hexdigest()
-
     try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="file is not valid UTF-8 text/CSV")
+        parsed_csv = parse_and_validate_csv(raw)
+    except CSVValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-    reader = csv.DictReader(io.StringIO(text))
-    rows = list(reader)
-    if reader.fieldnames is None:
-        raise HTTPException(status_code=400, detail="not a valid CSV (no header row)")
-    if any(f is None or not f.strip() for f in reader.fieldnames):
-        raise HTTPException(status_code=400, detail="not a valid CSV (malformed header row)")
-    if not rows:
-        raise HTTPException(status_code=400, detail="CSV has a header but zero data rows")
-
-    rows_total = len(rows)
+    dataset_id = hashlib.sha256(raw).hexdigest()
+    rows_total = len(parsed_csv.rows)
     uploaded_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     jobs[dataset_id] = {"rows_received": rows_total, "received_at": uploaded_at}
@@ -119,14 +118,17 @@ async def ingest(file: UploadFile = File(...)):
 
     try:
         producer = get_producer()
-        for i, row in enumerate(rows):
+        for parsed_row in parsed_csv.rows:
             message = {
                 "dataset_id": dataset_id,
                 "filename": file.filename,
                 "uploaded_at": uploaded_at,
-                "row_index": i,
+                "row_index": parsed_row.index,
                 "rows_total": rows_total,
-                "row": row,
+                "failed": parsed_row.failed,
+                "reason": parsed_row.reason,
+                "source_line": parsed_row.source_line,
+                "row": parsed_row.row,
             }
             producer.produce(
                 KAFKA_TOPIC,
@@ -148,21 +150,24 @@ async def ingest(file: UploadFile = File(...)):
 
 @app.get("/status")
 def status(job_id: str):
-    with get_driver().session(database=NEO4J_DATABASE) as session:
-        record = session.run(
-            "MATCH (d:Dataset {id: $id}) RETURN d.status AS status, "
-            "d.rows_total AS rows_total, d.rows_loaded AS rows_loaded, d.rows_failed AS rows_failed",
-            id=job_id,
-        ).single()
+    try:
+        with get_driver().session(database=NEO4J_DATABASE) as session:
+            record = session.run(
+                "MATCH (d:Dataset {id: $id}) RETURN d.status AS status, "
+                "d.rows_total AS rows_total, d.rows_loaded AS rows_loaded, d.rows_failed AS rows_failed",
+                id=job_id,
+            ).single()
 
-    if record is not None:
-        return {
-            "job_id": job_id,
-            "status": record["status"],
-            "rows_total": record["rows_total"],
-            "rows_loaded": record["rows_loaded"],
-            "rows_failed": record["rows_failed"],
-        }
+        if record is not None:
+            return {
+                "job_id": job_id,
+                "status": record["status"],
+                "rows_total": record["rows_total"],
+                "rows_loaded": record["rows_loaded"],
+                "rows_failed": record["rows_failed"],
+            }
+    except Exception as e:
+        log.debug("could not query neo4j for status: %s", e)
 
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="unknown job_id")
@@ -232,13 +237,15 @@ def workspace_graph():
 
 
 @app.post("/chat")
-def chat(payload: dict = None):
+def chat(payload: dict | None = None):
     if payload is None:
         payload = {}
     question = payload.get("question", "")
-    dataset_id = payload.get("dataset_id")
-    scope = payload.get("scope", "single")
-    dataset_ids = payload.get("dataset_ids")
-    return chatbot.answer_question(
-        get_driver(), NEO4J_DATABASE, question, dataset_id=dataset_id, scope=scope, dataset_ids=dataset_ids
-    )
+    chat_kwargs = {}
+    if "dataset_id" in payload:
+        chat_kwargs["dataset_id"] = payload["dataset_id"]
+    if "scope" in payload:
+        chat_kwargs["scope"] = payload["scope"]
+    if "dataset_ids" in payload:
+        chat_kwargs["dataset_ids"] = payload["dataset_ids"]
+    return chatbot.answer_question(get_driver(), NEO4J_DATABASE, question, **chat_kwargs)

@@ -1,0 +1,27 @@
+--- /ingest hostile input ---
+PASS: test_data/empty.csv -> HTTP 400
+PASS: test_data/header_only.csv -> HTTP 400
+PASS: test_data/not_a_csv.txt -> HTTP 400
+PASS: test_data/broken.csv -> HTTP 202
+PASS: test_data/small_clean.csv -> HTTP 202
+
+--- /chat hostile input ---
+Question before any upload (only meaningful on a fresh stack):
+{
+    "answer": "There are 21 rows in total.",
+    "cypher": "MATCH (r:Row) RETURN count(r) AS count",
+    "result": [
+        {
+            "count": 21
+        }
+    ],
+    "grounded": true
+}
+
+Question with no relevant data:
+{
+    "answer": "I don't have that in the data.",
+    "cypher": null,
+    "result": null,
+    "grounded": false
+}

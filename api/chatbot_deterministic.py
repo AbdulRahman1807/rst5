@@ -23,6 +23,7 @@ Intents supported (tried in order, most specific first):
  11. schema / columns question    "what columns do we have"
  12. dataset/status meta          "what's the status" / "how many datasets"
 """
+
 import logging
 import re
 
@@ -84,7 +85,8 @@ def _run(driver, database: str, cypher: str, params: dict) -> list[dict]:
 def _distinct_values(driver, database: str, column: str, limit: int = 500) -> list[str]:
     col = _quote_ident(column)
     result = _run(
-        driver, database,
+        driver,
+        database,
         f"MATCH (r:Row) WHERE r.{col} IS NOT NULL RETURN DISTINCT r.{col} AS v LIMIT $limit",
         {"limit": limit},
     )
@@ -172,7 +174,12 @@ def _distinct_values_intent(driver, database, question, columns):
     cypher = f"MATCH (r:Row) WHERE r.{col} IS NOT NULL RETURN DISTINCT r.{col} AS value ORDER BY value LIMIT 50"
     result = _run(driver, database, cypher, {})
     values = [row["value"] for row in result]
-    return {"answer": f"Distinct values of {column}: {', '.join(map(str, values))}.", "cypher": cypher, "result": result, "grounded": True}
+    return {
+        "answer": f"Distinct values of {column}: {', '.join(map(str, values))}.",
+        "cypher": cypher,
+        "result": result,
+        "grounded": True,
+    }
 
 
 def _groupby_count_intent(driver, database, question, columns, dataset_id=None):
@@ -223,11 +230,8 @@ def _topn_intent(driver, database, question, columns):
     col = _quote_ident(column)
     direction = "ASC" if re.search(r"\blowest\b", question, re.IGNORECASE) else "DESC"
     cypher = (
-        f"MATCH (r:Row) WHERE toFloat(r.{col}) IS NOT NULL "
-        f"RETURN r ORDER BY toFloat(r.{col}) {direction} LIMIT $n"
+        f"MATCH (r:Row) WHERE toFloat(r.{col}) IS NOT NULL " f"RETURN r ORDER BY toFloat(r.{col}) {direction} LIMIT $n"
     )
-    result = _run(driver, database, cypher, {"n": n})
-
     chart_data = []
     label_col = next((c for c in columns if c != column), "row_index")
     for row in result[:15]:
@@ -240,13 +244,17 @@ def _topn_intent(driver, database, question, columns):
         except (ValueError, TypeError):
             pass
 
-    chart = {
-        "type": "bar",
-        "title": f"Top {len(result)} by {column}",
-        "x_key": "label",
-        "y_key": "value",
-        "data": chart_data,
-    } if chart_data else None
+    chart = (
+        {
+            "type": "bar",
+            "title": f"Top {len(result)} by {column}",
+            "x_key": "label",
+            "y_key": "value",
+            "data": chart_data,
+        }
+        if chart_data
+        else None
+    )
 
     return {
         "answer": f"Top {len(result)} row(s) by {column} ({direction.lower()}ending).",
@@ -298,7 +306,12 @@ def _aggregate_intent(driver, database, question, columns, dataset_id=None):
     result = _run(driver, database, cypher, params)
     value = result[0]["result"] if result else None
     filter_desc = f" where {filter_col} = '{params.get('value')}'" if params.get("value") else ""
-    return {"answer": f"The {func} of {target_col}{filter_desc} is {value}.", "cypher": cypher, "result": result, "grounded": True}
+    return {
+        "answer": f"The {func} of {target_col}{filter_desc} is {value}.",
+        "cypher": cypher,
+        "result": result,
+        "grounded": True,
+    }
 
 
 def _count_intent(driver, database, question, columns, dataset_id=None):
@@ -323,7 +336,12 @@ def _count_intent(driver, database, question, columns, dataset_id=None):
             params = {**base_params, "n": number}
             result = _run(driver, database, cypher, params)
             count = result[0]["count"] if result else 0
-            return {"answer": f"There are {count} rows where {filter_col} {op} {number}.", "cypher": cypher, "result": result, "grounded": True}
+            return {
+                "answer": f"There are {count} rows where {filter_col} {op} {number}.",
+                "cypher": cypher,
+                "result": result,
+                "grounded": True,
+            }
 
     value = _find_equality(question, filter_col, driver, database) if filter_col else None
     if value is None:
@@ -335,7 +353,12 @@ def _count_intent(driver, database, question, columns, dataset_id=None):
         params = {**base_params, "value": value}
         result = _run(driver, database, cypher, params)
         count = result[0]["count"] if result else 0
-        return {"answer": f"There are {count} rows where {filter_col} = '{value}'.", "cypher": cypher, "result": result, "grounded": True}
+        return {
+            "answer": f"There are {count} rows where {filter_col} = '{value}'.",
+            "cypher": cypher,
+            "result": result,
+            "grounded": True,
+        }
 
     if not matched and not _FILTER_INTENT_WORDS.search(question):
         cypher = f"{prefix}RETURN count(r) AS count"
@@ -366,7 +389,12 @@ def _list_intent(driver, database, question, columns, dataset_id=None):
             col = _quote_ident(filter_col)
             cypher = f"{prefix}WHERE toFloat(r.{col}) {op} $n RETURN r LIMIT 20"
             result = _run(driver, database, cypher, {**base_params, "n": number})
-            return {"answer": f"Found {len(result)} row(s) where {filter_col} {op} {number}.", "cypher": cypher, "result": result, "grounded": True}
+            return {
+                "answer": f"Found {len(result)} row(s) where {filter_col} {op} {number}.",
+                "cypher": cypher,
+                "result": result,
+                "grounded": True,
+            }
 
     value = _find_equality(question, filter_col, driver, database) if filter_col else None
     if value is None:
@@ -376,7 +404,12 @@ def _list_intent(driver, database, question, columns, dataset_id=None):
         col = _quote_ident(filter_col)
         cypher = f"{prefix}WHERE toLower(r.{col}) = toLower($value) RETURN r LIMIT 20"
         result = _run(driver, database, cypher, {**base_params, "value": value})
-        return {"answer": f"Found {len(result)} row(s) where {filter_col} = '{value}'.", "cypher": cypher, "result": result, "grounded": True}
+        return {
+            "answer": f"Found {len(result)} row(s) where {filter_col} = '{value}'.",
+            "cypher": cypher,
+            "result": result,
+            "grounded": True,
+        }
 
     return None
 
@@ -400,7 +433,12 @@ def _dataset_status_intent(driver, database, question, columns):
     )
     result = _run(driver, database, cypher, {})
     n = len(result)
-    return {"answer": f"{n} dataset{'s' if n != 1 else ''} loaded.", "cypher": cypher, "result": result, "grounded": True}
+    return {
+        "answer": f"{n} dataset{'s' if n != 1 else ''} loaded.",
+        "cypher": cypher,
+        "result": result,
+        "grounded": True,
+    }
 
 
 def _cross_dataset_intent(driver, database, question: str, columns: list[str], dataset_id: str | None = None, scope: str = "single", dataset_ids: list[str] | None = None):

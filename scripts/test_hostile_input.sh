@@ -19,6 +19,7 @@ echo "--- /ingest hostile input ---"
 check_ingest test_data/empty.csv 400
 check_ingest test_data/header_only.csv 400
 check_ingest test_data/not_a_csv.txt 400
+check_ingest test_data/all_ragged.csv 400  # whole-file 400 when zero good rows exist
 check_ingest test_data/broken.csv 202   # ragged/stray-comma rows tolerated, not rejected — see REPORT.md limitations
 check_ingest test_data/small_clean.csv 202
 

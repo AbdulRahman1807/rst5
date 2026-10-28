@@ -4,7 +4,11 @@ import re
 
 from groq import Groq
 
-import chatbot_deterministic
+try:
+    import chatbot_deterministic
+except ImportError:
+    from api import chatbot_deterministic
+
 
 log = logging.getLogger("chatbot")
 
@@ -17,14 +21,11 @@ GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
 _client: Groq | None = None
 
-# Defense in depth #1: keyword reject list. Whole-word, case-insensitive.
-_WRITE_KEYWORDS = re.compile(
-    r"\b(CREATE|MERGE|DELETE|SET|REMOVE|DROP|DETACH|FOREACH|LOAD\s+CSV|CALL\s+db\.)\b",
-    re.IGNORECASE,
-)
-_READ_START = re.compile(r"^\s*(MATCH|OPTIONAL MATCH|WITH|UNWIND|RETURN)\b", re.IGNORECASE)
+try:
+    from guardrail import NO_QUERY, validate_read_only
+except ImportError:
+    from api.guardrail import NO_QUERY, validate_read_only
 
-NO_QUERY = "NO_QUERY"
 
 SYSTEM_PROMPT = """You translate a user's plain-English question into a single read-only Cypher query \
 for a Neo4j graph with exactly this schema:
@@ -90,9 +91,7 @@ def build_schema_context(driver, database: str, dataset_id: str | None = None) -
                 id=dataset_id,
             ).single()
         else:
-            record = session.run(
-                "MATCH (r:Row) RETURN keys(r) AS keys, r AS row LIMIT 1"
-            ).single()
+            record = session.run("MATCH (r:Row) RETURN keys(r) AS keys, r AS row LIMIT 1").single()
     if record is None:
         return [], {}
     columns = [k for k in record["keys"] if k not in ("row_index", "dataset_id")]
@@ -122,21 +121,11 @@ def generate_cypher(question: str, columns: list[str], sample_row: dict) -> str:
         reasoning_effort="low",
         timeout=8,
     )
-    raw = resp.choices[0].message.content.strip()
+    raw = (resp.choices[0].message.content or "").strip()
     # Strip markdown code fences if the model added them despite instructions — formatting only,
     # never a semantic rewrite of the query (see IMPLEMENTATION_PLAN.md "reject, don't strip").
     raw = re.sub(r"^```(?:cypher)?\s*|\s*```$", "", raw, flags=re.IGNORECASE).strip()
     return raw
-
-
-def validate_read_only(cypher: str) -> bool:
-    if not cypher or cypher == NO_QUERY:
-        return False
-    if _WRITE_KEYWORDS.search(cypher):
-        return False
-    if not _READ_START.match(cypher):
-        return False
-    return True
 
 
 # Hard cap regardless of what the LLM's query does — a forgotten LIMIT on a "list all rows"
@@ -171,7 +160,7 @@ def phrase_answer(question: str, cypher: str, result: list[dict]) -> str:
         reasoning_effort="low",
         timeout=8,
     )
-    return resp.choices[0].message.content.strip()
+    return (resp.choices[0].message.content or "").strip()
 
 
 def _groq_configured() -> bool:
@@ -292,11 +281,23 @@ def answer_question(driver, database: str, question: str, dataset_id: str | None
     strictly an enhancement for handling more phrasings, not a requirement. See
     SOLUTION_ANALYSIS.md for why."""
     if not question or not question.strip():
-        return {"answer": "Ask me something about the uploaded data.", "cypher": None, "result": None, "grounded": False, "chart": None}
+        return {
+            "answer": "Ask me something about the uploaded data.",
+            "cypher": None,
+            "result": None,
+            "grounded": False,
+            "chart": None,
+        }
 
     try:
         if not has_any_data(driver, database, dataset_id):
-            return {"answer": "I don't have any data yet — upload a CSV first.", "cypher": None, "result": None, "grounded": False, "chart": None}
+            return {
+                "answer": "I don't have any data yet — upload a CSV first.",
+                "cypher": None,
+                "result": None,
+                "grounded": False,
+                "chart": None,
+            }
 
         columns, sample_row = build_schema_context(driver, database, dataset_id)
 
@@ -320,4 +321,10 @@ def answer_question(driver, database: str, question: str, dataset_id: str | None
 
     except Exception as e:
         log.error("unexpected /chat failure: %s", e)
-        return {"answer": "I couldn't process that right now — try again in a moment.", "cypher": None, "result": None, "grounded": False, "chart": None}
+        return {
+            "answer": "I couldn't process that right now — try again in a moment.",
+            "cypher": None,
+            "result": None,
+            "grounded": False,
+            "chart": None,
+        }
