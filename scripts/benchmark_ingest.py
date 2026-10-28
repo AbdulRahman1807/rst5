@@ -31,7 +31,7 @@ def post_multipart(url: str, filepath: str) -> tuple[dict, float, int]:
 
     file_size = len(file_bytes)
     boundary = "----BenchmarkBoundary" + str(time.time()).replace(".", "")
-    
+
     body = []
     body.append(f"--{boundary}".encode("utf-8"))
     body.append(f'Content-Disposition: form-data; name="file"; filename="{filename}"'.encode("utf-8"))

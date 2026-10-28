@@ -196,7 +196,7 @@ def _groupby_count_intent(driver, database, question, columns, dataset_id=None):
     )
     result = _run(driver, database, cypher, {"dataset_id": dataset_id})
     parts = "; ".join(f"{row['value']}: {row['count']}" for row in result)
-    
+
     chart_data = [
         {"category": str(row["value"]) if row["value"] is not None else "(empty)", "count": row["count"]}
         for row in result[:15]
@@ -444,7 +444,7 @@ def _dataset_status_intent(driver, database, question, columns):
 def _cross_dataset_intent(driver, database, question: str, columns: list[str], dataset_id: str | None = None, scope: str = "single", dataset_ids: list[str] | None = None):
     is_cross_scope = scope in ("cross_dataset", "selected", "workspace") or (dataset_ids and len(dataset_ids) > 1)
     has_cross_words = bool(_CROSS_DATASET_WORDS.search(question))
-    
+
     cypher_rels = """
     MATCH (r:DatasetRelation)
     RETURN r.id AS id, r.source_id AS source_id, r.target_id AS target_id,

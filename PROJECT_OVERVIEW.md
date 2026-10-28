@@ -1,6 +1,6 @@
 # CSV → Kafka → Neo4j → Chatbot: Comprehensive Architecture & Project Guide
 
-> **Project Brief:** *Data In, Answers Out* (RISE @ RST #5 Hackathon)  
+> **Project Brief:** *Data In, Answers Out* (RISE @ RST #5 Hackathon)
 > **Core Objective:** Ingest arbitrary, dynamically structured CSV spreadsheets via a fault-tolerant streaming pipeline into a Neo4j knowledge graph, and provide a conversational chatbot that delivers mathematically and structurally grounded answers with verifiable Cypher queries and raw graph results—without hallucination.
 
 ---
