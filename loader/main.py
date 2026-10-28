@@ -5,7 +5,7 @@ import time
 
 from confluent_kafka import Consumer, KafkaException
 from neo4j import GraphDatabase
-from neo4j.exceptions import ServiceUnavailable, AuthError
+from neo4j.exceptions import AuthError, ServiceUnavailable
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("loader")
@@ -28,7 +28,7 @@ MERGE (d:Dataset {id: $dataset_id})
                 d.rows_total = $rows_total, d.rows_loaded = 0,
                 d.rows_failed = 0, d.status = 'loading'
 MERGE (r:Row {dataset_id: $dataset_id, row_index: $row_index})
-  ON CREATE SET r += $row, r._new = true
+  ON CREATE SET r += $row, r.dataset_id = $dataset_id, r.row_index = $row_index, r._new = true
   ON MATCH SET r._new = false
 MERGE (d)-[:HAS_ROW]->(r)
 WITH d, r
@@ -47,7 +47,7 @@ MERGE (d:Dataset {id: $dataset_id})
   ON CREATE SET d.filename = $filename, d.uploaded_at = $uploaded_at,
                 d.rows_total = $rows_total, d.rows_loaded = 0, d.rows_failed = 0, d.status = 'loading'
 MERGE (f:FailedRow {dataset_id: $dataset_id, row_index: $row_index})
-  ON CREATE SET f._new = true
+  ON CREATE SET f._new = true, f.reason = $reason
   ON MATCH SET f._new = false
 WITH d, f
 FOREACH (_ IN CASE WHEN f._new THEN [1] ELSE [] END | SET d.rows_failed = coalesce(d.rows_failed, 0) + 1)
@@ -57,12 +57,15 @@ SET d.status = CASE WHEN d.rows_loaded + d.rows_failed >= d.rows_total THEN 'com
 
 
 def connect_kafka() -> Consumer:
-    consumer = Consumer({
-        "bootstrap.servers": KAFKA_BROKERS,
-        "group.id": "loader",
-        "auto.offset.reset": "earliest",
-        "enable.auto.commit": True,
-    })
+    consumer = Consumer(
+        {
+            "bootstrap.servers": KAFKA_BROKERS,
+            "group.id": "loader",
+            "auto.offset.reset": "earliest",
+            "enable.auto.commit": True,
+            "topic.metadata.refresh.interval.ms": 1000,
+        }
+    )
     while True:
         try:
             consumer.list_topics(timeout=3)  # forces a broker round-trip; raises if not reachable yet
@@ -101,9 +104,35 @@ def main():
             log.error("kafka consume error: %s", kmsg.error())
             continue
 
-        msg = json.loads(kmsg.value().decode("utf-8"))
+        val = kmsg.value()
+        if val is None:
+            continue
+        msg = json.loads(val.decode("utf-8"))
         dataset_id = msg["dataset_id"]
         row_index = msg["row_index"]
+
+        if msg.get("failed", False):
+            try:
+                with driver.session(database=NEO4J_DATABASE) as session:
+                    session.run(
+                        MARK_FAILED,
+                        dataset_id=dataset_id,
+                        row_index=row_index,
+                        filename=msg["filename"],
+                        uploaded_at=msg["uploaded_at"],
+                        rows_total=msg["rows_total"],
+                        reason=msg.get("reason"),
+                    )
+                log.info(
+                    "marked pre-flagged failed row for dataset=%s row_index=%s reason=%s",
+                    dataset_id,
+                    row_index,
+                    msg.get("reason"),
+                )
+            except Exception as e2:
+                log.error("failed to mark row as failed: %s", e2)
+            continue
+
         try:
             with driver.session(database=NEO4J_DATABASE) as session:
                 session.run(
@@ -131,6 +160,7 @@ def main():
                         filename=msg["filename"],
                         uploaded_at=msg["uploaded_at"],
                         rows_total=msg["rows_total"],
+                        reason="load_error",
                     )
                 log.info("marked failed row for dataset=%s row_index=%s", dataset_id, row_index)
             except Exception as e2:

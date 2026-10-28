@@ -1,18 +1,24 @@
-import csv
 import hashlib
-import io
 import json
 import logging
 import os
 import time
 
-from confluent_kafka import Producer, KafkaException
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from confluent_kafka import KafkaException, Producer
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from neo4j import GraphDatabase
-from neo4j.exceptions import ServiceUnavailable, AuthError
+from neo4j.exceptions import AuthError, ServiceUnavailable
 
-import chatbot
+try:
+    import chatbot
+except ImportError:
+    from api import chatbot
+
+try:
+    from ingest_validation import CSVValidationError, parse_and_validate_csv
+except ImportError:
+    from api.ingest_validation import CSVValidationError, parse_and_validate_csv
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("api")
@@ -22,6 +28,7 @@ NEO4J_URI = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.environ["NEO4J_PASSWORD"]
 NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "csv-graph-db")
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 KAFKA_TOPIC = "csv-rows"
 
@@ -83,28 +90,16 @@ def health():
 @app.post("/ingest", status_code=202)
 async def ingest(file: UploadFile = File(...)):
     raw = await file.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="empty file")
     if not (file.filename or "").lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="file must be a .csv")
 
-    dataset_id = hashlib.sha256(raw).hexdigest()
-
     try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="file is not valid UTF-8 text/CSV")
+        parsed_csv = parse_and_validate_csv(raw)
+    except CSVValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-    reader = csv.DictReader(io.StringIO(text))
-    rows = list(reader)
-    if reader.fieldnames is None:
-        raise HTTPException(status_code=400, detail="not a valid CSV (no header row)")
-    if any(f is None or not f.strip() for f in reader.fieldnames):
-        raise HTTPException(status_code=400, detail="not a valid CSV (malformed header row)")
-    if not rows:
-        raise HTTPException(status_code=400, detail="CSV has a header but zero data rows")
-
-    rows_total = len(rows)
+    dataset_id = hashlib.sha256(raw).hexdigest()
+    rows_total = len(parsed_csv.rows)
     uploaded_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     jobs[dataset_id] = {"rows_received": rows_total, "received_at": uploaded_at}
@@ -118,14 +113,17 @@ async def ingest(file: UploadFile = File(...)):
 
     try:
         producer = get_producer()
-        for i, row in enumerate(rows):
+        for parsed_row in parsed_csv.rows:
             message = {
                 "dataset_id": dataset_id,
                 "filename": file.filename,
                 "uploaded_at": uploaded_at,
-                "row_index": i,
+                "row_index": parsed_row.index,
                 "rows_total": rows_total,
-                "row": row,
+                "failed": parsed_row.failed,
+                "reason": parsed_row.reason,
+                "source_line": parsed_row.source_line,
+                "row": parsed_row.row,
             }
             producer.produce(
                 KAFKA_TOPIC,
@@ -172,7 +170,7 @@ def status(job_id: str):
 
 
 @app.post("/chat")
-def chat(payload: dict = None):
+def chat(payload: dict | None = None):
     if payload is None:
         payload = {}
     question = payload.get("question", "")
