@@ -3,1022 +3,2091 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Data In, Answers Out</title>
+<title>GraphSense Studio · Experimental Graph Data Workspace</title>
 
-<!-- Google Fonts: Fraunces (Editorial Serif) & Inter (Clean Sans) -->
+<!-- Typography: Outfit, Inter, JetBrains Mono -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 
-<!-- React 18 UMD builds + Babel standalone for in-browser JSX compilation -->
-<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin onerror="this.onerror=null;this.src='vendor/react.production.min.js'"></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin onerror="this.onerror=null;this.src='vendor/react-dom.production.min.js'"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js" onerror="this.onerror=null;this.src='vendor/babel.min.js'"></script>
-<script>
-  if (!window.React) {
-    document.write('<script src="vendor/react.production.min.js"><\/script>');
-    document.write('<script src="vendor/react-dom.production.min.js"><\/script>');
-    document.write('<script src="vendor/babel.min.js"><\/script>');
-  }
-</script>
+<!-- React 18, Babel Standalone & Chart.js -->
+<script src="vendor/react.production.min.js"></script>
+<script src="vendor/react-dom.production.min.js"></script>
+<script src="vendor/babel.min.js"></script>
+<script src="vendor/chart.umd.min.js"></script>
 
 <style>
   :root {
-    --bg: #050505;
-    --text-primary: #f0f0f0;
-    --text-secondary: #909090;
-    --text-muted: #555555;
-    --divider: rgba(255, 255, 255, 0.08);
-    --divider-light: rgba(255, 255, 255, 0.14);
-    --font-serif: 'Fraunces', Georgia, serif;
-    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-mono: 'SF Mono', Menlo, Consolas, monospace;
-    --status-green: #4ade80;
-    --status-amber: #fbbf24;
-    --status-red: #f87171;
-    --status-blue: #60a5fa;
+    --bg-base: #09090b;
+    --bg-surface: #111114;
+    --bg-card: #16161a;
+    --bg-card-hover: #1f1f24;
+    --border-subtle: #27272a;
+    --border-bright: #3f3f46;
+    --border-highlight: #52525b;
+    --text-primary: #ffffff;
+    --text-secondary: #a1a1aa;
+    --text-muted: #71717a;
+    --accent-confirmed: #10b981;
+    --accent-candidate: #f59e0b;
+    --accent-danger: #ef4444;
+    --font-heading: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
   }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
-  body {
-    font-family: var(--font-sans);
-    background-color: var(--bg);
+  html {
+    scroll-behavior: smooth;
+    background-color: var(--bg-base);
     color: var(--text-primary);
-    line-height: 1.6;
-    padding: 3rem 1.5rem;
+  }
+
+  body {
+    font-family: var(--font-body);
+    background-color: var(--bg-base);
+    color: var(--text-primary);
+    line-height: 1.5;
     min-height: 100vh;
+    overflow-x: hidden;
     -webkit-font-smoothing: antialiased;
   }
 
-  .container {
-    max-width: 820px;
-    margin: 0 auto;
-  }
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg-base); }
+  ::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
-  /* Top Navigation & System Status Strip */
-  .top-nav {
+  /* Layout Structure */
+  .studio-layout {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding-bottom: 2rem;
-    border-bottom: 1px solid var(--divider);
-    margin-bottom: 3rem;
+    min-height: 100vh;
+    position: relative;
   }
 
-  .brand-tag {
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.2em;
-    color: var(--text-muted);
-    font-weight: 500;
-  }
-
-  .system-strip {
-    display: flex;
-    align-items: center;
-    gap: 1.25rem;
-  }
-
-  .system-node {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    font-size: 0.72rem;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--text-muted);
-  }
-
-  .status-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--text-muted);
-    transition: background 0.25s ease;
-  }
-  .status-dot.online {
-    background: var(--status-green);
-    box-shadow: 0 0 6px rgba(74, 222, 128, 0.4);
-  }
-  .status-dot.offline {
-    background: var(--status-red);
-    box-shadow: 0 0 6px rgba(248, 113, 113, 0.4);
-  }
-
-  /* Main Hero Header */
-  header {
-    margin-bottom: 3.5rem;
-    padding-bottom: 2.5rem;
-    border-bottom: 1px solid var(--divider);
-  }
-
-  h1 {
-    font-family: var(--font-serif);
-    font-size: 2.75rem;
-    font-weight: 400;
-    letter-spacing: -0.02em;
-    color: #fff;
-    line-height: 1.15;
-    margin-bottom: 0.75rem;
-  }
-
-  .subtitle {
-    font-size: 0.95rem;
-    color: var(--text-secondary);
-    font-weight: 300;
-    max-width: 600px;
-    line-height: 1.55;
-  }
-
-  /* Section Styling — Hairline Dividers, Unboxed */
-  .section-row {
-    padding-bottom: 3rem;
-    margin-bottom: 3rem;
-    border-bottom: 1px solid var(--divider);
-  }
-
-  .section-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    margin-bottom: 1.5rem;
-  }
-
-  .section-label {
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.18em;
-    color: var(--text-muted);
-    font-weight: 500;
-  }
-
-  .section-action-btn {
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    cursor: pointer;
-    text-decoration: underline;
-    text-underline-offset: 3px;
-    transition: color 0.15s ease;
-  }
-  .section-action-btn:hover {
-    color: #fff;
-  }
-
-  /* Upload Dropzone (Co-Star Minimal) */
-  .dropzone {
-    border: 1px dashed rgba(255, 255, 255, 0.15);
-    padding: 3rem 2rem;
-    text-align: center;
-    cursor: pointer;
-    background: rgba(255, 255, 255, 0.015);
-    transition: all 0.2s ease;
-  }
-
-  .dropzone:hover, .dropzone.dragover {
-    border-color: rgba(255, 255, 255, 0.5);
-    background: rgba(255, 255, 255, 0.035);
-  }
-
-  .dropzone input { display: none; }
-
-  .dropzone-callout {
-    font-family: var(--font-serif);
-    font-size: 1.35rem;
-    font-weight: 400;
-    color: #fff;
-    margin-bottom: 0.4rem;
-  }
-
-  .dropzone-sub {
-    font-size: 0.8rem;
-    color: var(--text-muted);
-    letter-spacing: 0.05em;
-  }
-
-  .file-stamp-row {
-    margin-top: 1.25rem;
-    font-size: 0.84rem;
-    color: var(--text-secondary);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0.6rem 0.8rem;
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid var(--divider);
-  }
-
-  .file-stamp-name {
-    color: #fff;
-    font-weight: 500;
-  }
-
-  .file-stamp-time {
-    color: var(--text-muted);
-    font-size: 0.78rem;
-    font-style: italic;
-  }
-
-  /* Ingest Job Meta Details */
-  .meta-row {
-    display: flex;
-    gap: 2.5rem;
-    margin-top: 1.25rem;
-    flex-wrap: wrap;
-    font-size: 0.8rem;
-    color: var(--text-muted);
-  }
-
-  .meta-item strong {
-    color: var(--text-primary);
-    font-family: var(--font-mono);
-    display: inline-block;
-    margin-left: 0.35rem;
-    font-weight: 400;
-  }
-
-  /* Load Status — 3-Column Large Numbers */
-  .status-hero {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-end;
-    margin-bottom: 2rem;
-  }
-
-  .status-text-badge {
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.15em;
-    font-weight: 600;
-  }
-  .status-text-queued { color: var(--status-amber); }
-  .status-text-loading { color: var(--status-blue); }
-  .status-text-complete { color: var(--status-green); }
-  .status-text-failed { color: var(--status-red); }
-  .status-text-awaiting { color: var(--text-muted); font-style: italic; }
-
-  .figures-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
-    gap: 1.5rem;
-    margin-bottom: 1.75rem;
-  }
-
-  .figure-col {
+  /* Liquid Morphing Sidebar */
+  .liquid-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 100;
+    background: rgba(17, 17, 20, 0.95);
+    backdrop-filter: blur(12px);
+    border-right: 1px solid var(--border-subtle);
+    width: 64px;
+    transition: width 0.3s cubic-bezier(0.16, 1, 0.3, 1);
     display: flex;
     flex-direction: column;
-  }
-
-  .figure-number {
-    font-family: var(--font-serif);
-    font-size: 3.75rem;
-    line-height: 1;
-    font-weight: 400;
-    color: #fff;
-    margin-bottom: 0.5rem;
-  }
-
-  .figure-number.loaded {
-    color: var(--status-green);
-  }
-
-  .figure-number.failed {
-    color: var(--status-red);
-  }
-
-  .figure-label {
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.15em;
-    color: var(--text-muted);
-    font-weight: 500;
-  }
-
-  /* Minimal Hairline Progress Bar */
-  .progress-wrap {
-    margin-top: 1rem;
-  }
-
-  .progress-bar-bg {
-    width: 100%;
-    height: 2px;
-    background: rgba(255, 255, 255, 0.08);
-    position: relative;
     overflow: hidden;
+    user-select: none;
   }
 
-  .progress-bar-fill {
-    height: 100%;
-    background: #fff;
-    transition: width 0.35s ease;
+  .liquid-sidebar.expanded {
+    width: 250px;
+    box-shadow: 12px 0 32px rgba(0, 0, 0, 0.6);
   }
 
-  .progress-label {
+  .sidebar-header {
+    height: 64px;
     display: flex;
-    justify-content: space-between;
+    align-items: center;
+    padding: 0 18px;
+    border-bottom: 1px solid var(--border-subtle);
+    gap: 12px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .sidebar-brand-icon {
+    width: 28px;
+    height: 28px;
+    background: #ffffff;
+    color: #000000;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+    font-weight: 800;
+    font-size: 0.9rem;
+    flex-shrink: 0;
+  }
+
+  .sidebar-brand-text {
+    font-family: var(--font-heading);
+    font-size: 0.95rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+    opacity: 0;
+    transform: translateX(-8px);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+  }
+
+  .liquid-sidebar.expanded .sidebar-brand-text {
+    opacity: 1;
+    transform: translateX(0);
+  }
+
+  .sidebar-nav {
+    flex: 1;
+    padding: 1.25rem 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    position: relative;
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    height: 44px;
+    border-radius: 6px;
+    padding: 0 14px;
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 0.85rem;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    cursor: pointer;
+    white-space: nowrap;
+    position: relative;
+  }
+
+  .nav-item:hover {
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .nav-item.active {
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .nav-item.active::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 8px;
+    bottom: 8px;
+    width: 3px;
+    background: #ffffff;
+    border-radius: 0 2px 2px 0;
+  }
+
+  .nav-icon {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    font-weight: 600;
+    width: 24px;
+    flex-shrink: 0;
+    text-align: center;
+    color: var(--text-muted);
+  }
+
+  .nav-item.active .nav-icon {
+    color: #ffffff;
+  }
+
+  .nav-label {
+    margin-left: 12px;
+    opacity: 0;
+    transform: translateX(-6px);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+  }
+
+  .liquid-sidebar.expanded .nav-label {
+    opacity: 1;
+    transform: translateX(0);
+  }
+
+  .sidebar-footer {
+    padding: 1rem 0.85rem;
+    border-top: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .sidebar-meta-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
     font-size: 0.72rem;
     color: var(--text-muted);
-    letter-spacing: 0.05em;
-    margin-top: 0.4rem;
-  }
-
-  /* Preview Table */
-  .table-wrap {
-    margin-top: 2rem;
-    overflow-x: auto;
-  }
-
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.82rem;
-  }
-
-  th, td {
-    padding: 0.6rem 0.8rem;
-    text-align: left;
-    border-bottom: 1px solid var(--divider);
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 220px;
   }
 
-  th {
-    color: var(--text-muted);
-    font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
-    font-weight: 500;
-    background: transparent;
+  .meta-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent-confirmed);
+    box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
+    flex-shrink: 0;
   }
 
-  td {
-    color: var(--text-secondary);
-    font-family: var(--font-sans);
-  }
-
-  tr:hover td {
-    color: #fff;
-  }
-
-  /* Chat & Questions */
-  .example-chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    margin-bottom: 1.25rem;
-  }
-
-  .chip {
-    background: transparent;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    color: var(--text-secondary);
-    padding: 0.35rem 0.75rem;
-    font-size: 0.74rem;
-    cursor: pointer;
-    transition: all 0.15s ease;
-    border-radius: 0;
-  }
-
-  .chip:hover {
-    border-color: rgba(255, 255, 255, 0.5);
-    color: #fff;
-    background: rgba(255, 255, 255, 0.04);
-  }
-
-  .chat-input-row {
-    display: flex;
-    gap: 0.75rem;
-    align-items: center;
-  }
-
-  input[type="text"] {
+  /* Main Stage Workspace */
+  .main-stage {
     flex: 1;
-    background: transparent;
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    color: #fff;
-    padding: 0.75rem 1rem;
+    margin-left: 64px;
+    padding: 2.5rem 3rem 6rem;
+    max-width: 1480px;
+    transition: margin-left 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  @media (max-width: 1024px) {
+    .main-stage { padding: 1.5rem; }
+  }
+
+  /* Section Headers & Typography */
+  .section-tag {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .section-tag::before {
+    content: '';
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    background: #ffffff;
+  }
+
+  .editorial-title {
+    font-family: var(--font-heading);
+    font-size: 2.25rem;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    line-height: 1.15;
+    margin: 0.35rem 0 0.75rem;
+    color: #ffffff;
+  }
+
+  .editorial-sub {
     font-size: 0.95rem;
-    font-family: var(--font-sans);
-    border-radius: 0;
+    color: var(--text-secondary);
+    max-width: 720px;
+    line-height: 1.6;
+  }
+
+  /* Collapsible Workspace Section */
+  .workspace-section {
+    margin-bottom: 2.5rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    overflow: hidden;
     transition: border-color 0.2s ease;
   }
 
-  input[type="text"]:focus {
-    outline: none;
-    border-color: #ffffff;
+  .workspace-section:focus-within,
+  .workspace-section:hover {
+    border-color: var(--border-bright);
   }
 
-  button.action-btn {
-    background: transparent;
-    color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.4);
-    padding: 0.75rem 1.75rem;
-    font-size: 0.78rem;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.12em;
+  .section-accordion-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1.25rem 1.75rem;
+    background: var(--bg-surface);
     cursor: pointer;
-    border-radius: 0;
+    border-bottom: 1px solid transparent;
+    user-select: none;
+    transition: background 0.2s ease;
+  }
+
+  .section-accordion-header:hover {
+    background: rgba(255, 255, 255, 0.02);
+  }
+
+  .workspace-section.open .section-accordion-header {
+    border-bottom-color: var(--border-subtle);
+  }
+
+  .header-left {
+    display: flex;
+    align-items: baseline;
+    gap: 1.25rem;
+  }
+
+  .section-num {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-muted);
+  }
+
+  .section-name {
+    font-family: var(--font-heading);
+    font-size: 1.15rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .section-collapse-icon {
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    transition: transform 0.2s ease;
+  }
+
+  .workspace-section.open .section-collapse-icon {
+    transform: rotate(180deg);
+  }
+
+  .section-content {
+    padding: 1.75rem;
+  }
+
+  /* Spatial Overview Metrics */
+  .overview-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 1.25rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .metric-surface {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    padding: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+
+  .metric-label {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .metric-value {
+    font-family: var(--font-heading);
+    font-size: 2.2rem;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    color: #ffffff;
+    margin: 0.4rem 0;
+  }
+
+  .metric-footnote {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+  }
+
+  /* Dataset Selector Bar */
+  .dataset-strip {
+    display: flex;
+    gap: 0.75rem;
+    overflow-x: auto;
+    padding-bottom: 0.5rem;
+    margin-top: 1rem;
+  }
+
+  .dataset-pill {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    padding: 0.65rem 1rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .dataset-pill:hover {
+    border-color: var(--border-bright);
+    background: var(--bg-card-hover);
+  }
+
+  .dataset-pill.active {
+    border-color: #ffffff;
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .dataset-pill-name {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    font-weight: 600;
+  }
+
+  .dataset-pill-rows {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-muted);
+  }
+
+  /* Interactive SVG Node Visualizer */
+  .canvas-container {
+    position: relative;
+    width: 100%;
+    height: 560px;
+    background: #060608;
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .canvas-svg {
+    width: 100%;
+    height: 100%;
+    cursor: grab;
+  }
+
+  .canvas-svg:active {
+    cursor: grabbing;
+  }
+
+  .canvas-toolbar {
+    position: absolute;
+    top: 14px;
+    left: 14px;
+    display: flex;
+    gap: 0.5rem;
+    z-index: 10;
+  }
+
+  .canvas-btn {
+    background: rgba(24, 24, 27, 0.9);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    padding: 0.4rem 0.75rem;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
     transition: all 0.2s ease;
   }
 
-  button.action-btn:hover:not(:disabled) {
-    background: #fff;
-    color: #000;
+  .canvas-btn:hover {
+    color: #ffffff;
+    border-color: var(--border-bright);
+    background: #27272a;
   }
 
-  button.action-btn:disabled {
-    border-color: rgba(255, 255, 255, 0.1);
+  .canvas-legend {
+    position: absolute;
+    bottom: 14px;
+    left: 14px;
+    display: flex;
+    gap: 1.25rem;
+    background: rgba(17, 17, 20, 0.85);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--border-subtle);
+    padding: 0.5rem 0.85rem;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
     color: var(--text-muted);
-    cursor: not-allowed;
   }
 
-  /* Chat History List */
-  .chat-stream {
-    margin-top: 2rem;
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .legend-line {
+    width: 18px;
+    height: 2px;
+  }
+
+  .legend-line.solid { background: #ffffff; }
+  .legend-line.dashed { background: var(--text-muted); border-top: 2px dashed #71717a; height: 0; }
+
+  /* Side Inspector Drawer */
+  .inspector-drawer {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 360px;
+    background: rgba(18, 18, 22, 0.96);
+    backdrop-filter: blur(16px);
+    border-left: 1px solid var(--border-subtle);
+    padding: 1.5rem;
     display: flex;
     flex-direction: column;
-    gap: 2rem;
+    z-index: 20;
+    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.5);
+    overflow-y: auto;
+    animation: drawerSlide 0.25s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
-  .chat-entry {
-    padding-bottom: 2rem;
-    border-bottom: 1px solid var(--divider);
+  @keyframes drawerSlide {
+    from { transform: translateX(100%); }
+    to { transform: translateX(0); }
+  }
+
+  .drawer-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border-subtle);
+    margin-bottom: 1.25rem;
+  }
+
+  .drawer-close {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    cursor: pointer;
+  }
+
+  .drawer-close:hover { color: #ffffff; }
+
+  /* Relationships Explorer Table */
+  .relationships-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    margin-top: 1rem;
+  }
+
+  .relationships-table th {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    text-align: left;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .relationships-table td {
+    padding: 0.85rem 1rem;
+    border-bottom: 1px solid var(--border-subtle);
+    vertical-align: middle;
+  }
+
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0.25rem 0.55rem;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  .status-badge.confirmed {
+    background: rgba(16, 185, 129, 0.1);
+    color: var(--accent-confirmed);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+  }
+
+  .status-badge.candidate {
+    background: rgba(245, 158, 11, 0.1);
+    color: var(--accent-candidate);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+  }
+
+  .status-badge.rejected {
+    background: rgba(239, 68, 68, 0.1);
+    color: var(--accent-danger);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+  }
+
+  .btn-action {
+    background: #ffffff;
+    color: #000000;
+    border: none;
+    padding: 0.35rem 0.75rem;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
     transition: opacity 0.2s ease;
   }
 
-  .chat-entry.recent {
-    opacity: 1;
+  .btn-action:hover { opacity: 0.85; }
+
+  .btn-action.secondary {
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border-subtle);
   }
 
-  .chat-entry.older {
-    opacity: 0.65;
+  .btn-action.secondary:hover {
+    color: #ffffff;
+    border-color: var(--border-bright);
   }
 
-  .chat-entry-header {
+  /* Natural Language Analyst & Chat */
+  .chat-box {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+  }
+
+  .chat-controls-bar {
     display: flex;
     justify-content: space-between;
-    align-items: baseline;
-    margin-bottom: 0.6rem;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+    background: var(--bg-card);
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
   }
 
-  .chat-q-text {
-    font-size: 0.86rem;
+  .scope-selector {
+    display: flex;
+    gap: 0.4rem;
+  }
+
+  .scope-btn {
+    background: transparent;
+    border: 1px solid transparent;
     color: var(--text-secondary);
-    font-style: italic;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    padding: 0.35rem 0.65rem;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s ease;
   }
 
-  .grounded-label {
-    font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.15em;
+  .scope-btn:hover { color: #ffffff; }
+
+  .scope-btn.active {
+    background: #ffffff;
+    color: #000000;
     font-weight: 600;
   }
-  .grounded-label.is-grounded {
-    color: var(--status-green);
-  }
-  .grounded-label.not-grounded {
-    color: var(--status-amber);
+
+  .prompt-chips {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
   }
 
-  .chat-answer-serif {
-    font-family: var(--font-serif);
-    font-size: 1.35rem;
-    line-height: 1.45;
-    color: #fff;
-    margin-bottom: 0.85rem;
-  }
-
-  details {
+  .prompt-chip {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    padding: 0.35rem 0.75rem;
+    border-radius: 4px;
     font-size: 0.78rem;
-    color: var(--text-muted);
-  }
-
-  summary {
     cursor: pointer;
-    user-select: none;
-    letter-spacing: 0.05em;
-    padding: 0.25rem 0;
+    transition: all 0.2s ease;
   }
 
-  summary:hover {
+  .prompt-chip:hover {
+    border-color: var(--border-bright);
+    color: #ffffff;
+    background: var(--bg-card-hover);
+  }
+
+  .chat-history {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+    max-height: 520px;
+    overflow-y: auto;
+    padding-right: 0.5rem;
+  }
+
+  .chat-message {
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    padding: 1.25rem;
+    background: var(--bg-card);
+  }
+
+  .chat-message.user {
+    background: rgba(255, 255, 255, 0.03);
+    border-color: var(--border-bright);
+  }
+
+  .msg-meta {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-bottom: 0.5rem;
+  }
+
+  .msg-text {
+    font-size: 0.95rem;
+    line-height: 1.6;
+    color: #ffffff;
+  }
+
+  .join-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border-subtle);
+    padding: 0.25rem 0.6rem;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    margin-top: 0.75rem;
     color: var(--text-secondary);
   }
 
-  pre {
-    background: rgba(255, 255, 255, 0.02);
-    border: 1px solid var(--divider);
-    padding: 0.85rem;
-    margin-top: 0.5rem;
-    font-family: var(--font-mono);
-    font-size: 0.78rem;
-    color: #d1d5db;
-    overflow-x: auto;
-    line-height: 1.5;
+  .chat-input-bar {
+    display: flex;
+    gap: 0.75rem;
   }
 
-  /* Alerts / Empty States */
-  .error-box {
-    margin-top: 1rem;
+  .chat-input {
+    flex: 1;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    color: #ffffff;
+    font-family: var(--font-body);
+    font-size: 0.95rem;
     padding: 0.75rem 1rem;
-    border: 1px solid rgba(248, 113, 113, 0.3);
-    color: var(--status-red);
-    font-size: 0.82rem;
-    background: rgba(248, 113, 113, 0.05);
+    outline: none;
+    transition: border-color 0.2s ease;
   }
 
-  .empty-state {
-    color: var(--text-muted);
-    font-size: 0.84rem;
-    font-style: italic;
+  .chat-input:focus { border-color: #ffffff; }
+
+  /* Quality & Anomalies Report */
+  .quality-metrics-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1.25rem;
+    margin-bottom: 1.5rem;
   }
 
-  .spinner {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border: 1.5px solid rgba(255, 255, 255, 0.2);
-    border-top-color: currentColor;
+  .health-gauge-box {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    padding: 1.25rem;
+    border-radius: 6px;
+  }
+
+  .gauge-circle {
+    width: 84px;
+    height: 84px;
     border-radius: 50%;
-    animation: spin 0.6s linear infinite;
-    margin-right: 6px;
-    vertical-align: middle;
+    border: 4px solid var(--accent-confirmed);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-heading);
+    font-weight: 700;
+    font-size: 1.4rem;
+    flex-shrink: 0;
   }
-  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* File Dropzone & Pipeline */
+  .dropzone {
+    border: 2px dashed var(--border-subtle);
+    border-radius: 8px;
+    padding: 2.5rem;
+    text-align: center;
+    cursor: pointer;
+    background: rgba(255, 255, 255, 0.01);
+    transition: all 0.2s ease;
+  }
+
+  .dropzone:hover {
+    border-color: #ffffff;
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  /* Evidence table */
+  .evidence-table-container {
+    margin-top: 1rem;
+    border: 1px solid var(--border-subtle);
+    border-radius: 4px;
+    max-height: 240px;
+    overflow: auto;
+  }
+
+  .evidence-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+  }
+
+  .evidence-table th {
+    background: #111114;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border-subtle);
+    text-align: left;
+    color: var(--text-muted);
+  }
+
+  .evidence-table td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border-subtle);
+    white-space: nowrap;
+  }
 </style>
 </head>
 <body>
+
 <div id="root"></div>
 
 <script type="text/babel">
-  const { useState, useEffect, useRef } = React;
-  const API_BASE = "http://localhost:8000";
+const { useState, useEffect, useRef, useMemo } = React;
 
-  function App() {
-    // 1. System Health state (API, Kafka, Neo4j)
-    const [health, setHealth] = useState({ api: false, kafka: false, neo4j: false });
+// ---------------------------------------------------------------------------
+// 1. LIQUID MORPHING SIDEBAR COMPONENT
+// ---------------------------------------------------------------------------
+function LiquidSidebar({ activeSection, onNavigate, datasetCount, confirmedRelCount }) {
+  const [expanded, setExpanded] = useState(false);
 
-    // 2. Upload state
-    const [fileName, setFileName] = useState("");
-    const [uploadTimestamp, setUploadTimestamp] = useState("");
-    const [isDragOver, setIsDragOver] = useState(false);
-    const [uploadError, setUploadError] = useState("");
-    const [jobMeta, setJobMeta] = useState(null); // { job_id, rows_received, status }
-    const fileInputRef = useRef(null);
+  const navItems = [
+    { id: 'overview', icon: '01', label: 'Overview' },
+    { id: 'visualizer', icon: '02', label: 'Node Visualizer' },
+    { id: 'relationships', icon: '03', label: 'Relationships' },
+    { id: 'chat', icon: '04', label: 'Graph Analyst' },
+    { id: 'quality', icon: '05', label: 'Data Quality' },
+    { id: 'pipeline', icon: '06', label: 'Stream Pipeline' },
+  ];
 
-    // 3. Preview & Status state
-    const [previewRows, setPreviewRows] = useState([]);
-    const [previewHeaders, setPreviewHeaders] = useState([]);
-    const [previewTotalRows, setPreviewTotalRows] = useState(0);
-    const [statusData, setStatusData] = useState(null);
-    const [statusError, setStatusError] = useState("");
-    const [isPolling, setIsPolling] = useState(false);
+  return (
+    <aside
+      className={`liquid-sidebar ${expanded ? 'expanded' : ''}`}
+      onMouseEnter={() => setExpanded(true)}
+      onMouseLeave={() => setExpanded(false)}
+    >
+      <div className="sidebar-header" onClick={() => setExpanded(!expanded)}>
+        <div className="sidebar-brand-icon">G</div>
+        <div className="sidebar-brand-text">GRAPHSENSE</div>
+      </div>
 
-    // 4. Chat state (keeps running list of last 5 Q&A pairs)
-    const [question, setQuestion] = useState("");
-    const [isAsking, setIsAsking] = useState(false);
-    const [chatError, setChatError] = useState("");
-    const [chatHistory, setChatHistory] = useState([]);
+      <nav className="sidebar-nav">
+        {navItems.map(item => (
+          <div
+            key={item.id}
+            className={`nav-item ${activeSection === item.id ? 'active' : ''}`}
+            onClick={() => onNavigate(item.id)}
+          >
+            <span className="nav-icon">{item.icon}</span>
+            <span className="nav-label">{item.label}</span>
+          </div>
+        ))}
+      </nav>
 
-    // System Status Strip: poll /health on page load and every 10s (completely separate from job status)
-    useEffect(() => {
-      const checkHealth = async () => {
-        try {
-          const res = await fetch(`${API_BASE}/health`);
-          if (res.ok) {
-            const data = await res.json();
-            setHealth({
-              api: data.status === "ok",
-              kafka: !!data.kafka_connected,
-              neo4j: !!data.neo4j_connected
-            });
-          } else {
-            setHealth({ api: false, kafka: false, neo4j: false });
-          }
-        } catch (err) {
-          setHealth({ api: false, kafka: false, neo4j: false });
-        }
+      <div className="sidebar-footer">
+        <div className="sidebar-meta-badge">
+          <div className="meta-dot"></div>
+          {expanded && <span>{datasetCount} Datasets Loaded</span>}
+        </div>
+        {expanded && (
+          <div className="sidebar-meta-badge" style={{ color: 'var(--text-secondary)' }}>
+            <span>{confirmedRelCount} Confirmed Joins</span>
+          </div>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 2. INTERACTIVE SVG NODE GRAPH VISUALIZER
+// ---------------------------------------------------------------------------
+function NodeVisualizer({
+  graphData,
+  onConfirmRel,
+  onRejectRel,
+  activeDatasetId,
+  onSelectDataset
+}) {
+  const [pan, setPan] = useState({ x: 420, y: 280 });
+  const [zoom, setZoom] = useState(1);
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [selectedNode, setSelectedNode] = useState(null);
+  const [selectedEdge, setSelectedEdge] = useState(null);
+  const [expandedDatasets, setExpandedDatasets] = useState({});
+  const [filterMode, setFilterMode] = useState('all'); // 'all', 'confirmed', 'candidate'
+  const [edgeMatches, setEdgeMatches] = useState(null);
+  const [loadingMatches, setLoadingMatches] = useState(false);
+
+  // Position calculation for datasets and expanding columns
+  const layout = useMemo(() => {
+    if (!graphData || !graphData.nodes) return { datasetNodes: [], columnNodes: [], edges: [] };
+
+    const datasets = graphData.nodes.filter(n => n.type === 'dataset');
+    const radius = Math.max(160, datasets.length * 45);
+    const datasetNodes = datasets.map((d, idx) => {
+      const angle = (idx / datasets.length) * 2 * Math.PI - Math.PI / 2;
+      return {
+        ...d,
+        x: Math.cos(angle) * radius,
+        y: Math.sin(angle) * radius,
       };
+    });
 
-      checkHealth();
-      const healthTimer = setInterval(checkHealth, 10000);
-      return () => clearInterval(healthTimer);
-    }, []);
+    const datasetPosMap = {};
+    datasetNodes.forEach(d => { datasetPosMap[d.id] = { x: d.x, y: d.y }; });
 
-    // File selection & upload logic (identical endpoints and multipart contract)
-    const handleFile = async (file) => {
-      if (!file) return;
-      setUploadError("");
-      setFileName(file.name);
-
-      // Record human-readable timestamp e.g. "2:14 PM"
-      const nowStr = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-      setUploadTimestamp(nowStr);
-
-      // Client-side preview parse (first 10 rows)
-      try {
-        const text = await file.text();
-        const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
-        if (lines.length > 0) {
-          const header = lines[0].split(",");
-          const rows = lines.slice(1, 11).map(l => l.split(","));
-          setPreviewHeaders(header);
-          setPreviewRows(rows);
-          setPreviewTotalRows(lines.length - 1);
-        } else {
-          setPreviewHeaders([]);
-          setPreviewRows([]);
-          setPreviewTotalRows(0);
-        }
-      } catch (err) {
-        console.error("Preview parse failed:", err);
-      }
-
-      // Upload to API
-      const formData = new FormData();
-      formData.append("file", file);
-
-      try {
-        const res = await fetch(`${API_BASE}/ingest`, {
-          method: "POST",
-          body: formData,
+    // Columns blossom around expanded dataset nodes
+    const columnNodes = [];
+    datasetNodes.forEach(d => {
+      if (expandedDatasets[d.id] && d.columns) {
+        const colCount = d.columns.length;
+        const colRadius = 80;
+        d.columns.forEach((colName, cIdx) => {
+          const colAngle = (cIdx / colCount) * 2 * Math.PI;
+          columnNodes.push({
+            id: `${d.id}:${colName}`,
+            name: colName,
+            datasetId: d.id,
+            datasetName: d.label,
+            x: d.x + Math.cos(colAngle) * colRadius,
+            y: d.y + Math.sin(colAngle) * colRadius,
+          });
         });
-        if (!res.ok) {
-          const body = await res.text();
-          throw new Error(`Server returned ${res.status}: ${body}`);
-        }
-        const data = await res.json();
-        setJobMeta(data);
-        setStatusData({
-          status: data.status || "queued",
-          rows_total: data.rows_received,
-          rows_loaded: 0,
-          rows_failed: 0,
-        });
-        setIsPolling(true);
-      } catch (err) {
-        setUploadError(`Upload failed: ${err.message}. Is the API running at ${API_BASE}?`);
-        console.error(err);
       }
+    });
+
+    const edges = (graphData.edges || [])
+      .filter(e => {
+        if (filterMode === 'confirmed') return e.status === 'confirmed';
+        if (filterMode === 'candidate') return e.status === 'candidate';
+        return true;
+      })
+      .map(e => {
+        const s = datasetPosMap[e.source] || { x: 0, y: 0 };
+        const t = datasetPosMap[e.target] || { x: 0, y: 0 };
+        return { ...e, x1: s.x, y1: s.y, x2: t.x, y2: t.y };
+      });
+
+    return { datasetNodes, columnNodes, edges };
+  }, [graphData, expandedDatasets, filterMode]);
+
+  // Canvas pan interactions
+  const handleMouseDown = e => {
+    if (e.target.tagName === 'svg' || e.target.id === 'canvas-bg') {
+      setIsDragging(true);
+      setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
+    }
+  };
+
+  const handleMouseMove = e => {
+    if (isDragging) {
+      setPan({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y });
+    }
+  };
+
+  const handleMouseUp = () => setIsDragging(false);
+
+  const toggleExpand = (id, e) => {
+    e.stopPropagation();
+    setExpandedDatasets(prev => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const selectEdge = edge => {
+    setSelectedEdge(edge);
+    setSelectedNode(null);
+    setLoadingMatches(true);
+    fetch(`http://localhost:8000/relationships/${edge.id}/matches`)
+      .then(r => r.json())
+      .then(data => {
+        setEdgeMatches(data);
+        setLoadingMatches(false);
+      })
+      .catch(() => setLoadingMatches(false));
+  };
+
+  return (
+    <div className="canvas-container" onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp}>
+      {/* Canvas Toolbar */}
+      <div className="canvas-toolbar">
+        <button className="canvas-btn" onClick={() => setZoom(z => Math.min(2, z + 0.2))}>+ Zoom In</button>
+        <button className="canvas-btn" onClick={() => setZoom(z => Math.max(0.4, z - 0.2))}>- Zoom Out</button>
+        <button className="canvas-btn" onClick={() => { setPan({ x: 420, y: 280 }); setZoom(1); }}>Reset Layout</button>
+        <button
+          className={`canvas-btn ${filterMode === 'confirmed' ? 'active' : ''}`}
+          onClick={() => setFilterMode(m => m === 'confirmed' ? 'all' : 'confirmed')}
+        >
+          {filterMode === 'confirmed' ? 'Show All Links' : 'Filter: Confirmed Only'}
+        </button>
+      </div>
+
+      {/* Canvas Legend */}
+      <div className="canvas-legend">
+        <div className="legend-item">
+          <div className="legend-line solid"></div>
+          <span>Confirmed Join</span>
+        </div>
+        <div className="legend-item">
+          <div className="legend-line dashed"></div>
+          <span>Candidate Edge</span>
+        </div>
+        <div className="legend-item">
+          <span style={{ color: '#fff' }}>●</span>
+          <span>CSV Dataset Node</span>
+        </div>
+        <div className="legend-item">
+          <span style={{ color: 'var(--text-muted)' }}>○</span>
+          <span>Column Node</span>
+        </div>
+      </div>
+
+      <svg className="canvas-svg" id="canvas-bg">
+        <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
+          {/* Subtle Grid Lines */}
+          <line x1="-1200" y1="0" x2="1200" y2="0" stroke="#18181b" strokeWidth="1" />
+          <line x1="0" y1="-1200" x2="0" y2="1200" stroke="#18181b" strokeWidth="1" />
+
+          {/* Relationship Edges */}
+          {layout.edges.map(e => {
+            const isConfirmed = e.status === 'confirmed';
+            const isSelected = selectedEdge && selectedEdge.id === e.id;
+            const midX = (e.x1 + e.x2) / 2;
+            const midY = (e.y1 + e.y2) / 2;
+
+            return (
+              <g key={e.id} onClick={() => selectEdge(e)} style={{ cursor: 'pointer' }}>
+                <line
+                  x1={e.x1}
+                  y1={e.y1}
+                  x2={e.x2}
+                  y2={e.y2}
+                  stroke={isSelected ? '#38bdf8' : isConfirmed ? '#ffffff' : '#52525b'}
+                  strokeWidth={isConfirmed ? 2.5 : 1.5}
+                  strokeDasharray={isConfirmed ? 'none' : '5 4'}
+                  opacity={isSelected ? 1 : isConfirmed ? 0.9 : 0.6}
+                />
+                {/* Edge Badge */}
+                <g transform={`translate(${midX}, ${midY})`}>
+                  <rect
+                    x="-32"
+                    y="-12"
+                    width="64"
+                    height="24"
+                    rx="4"
+                    fill="#18181b"
+                    stroke={isConfirmed ? '#ffffff' : 'var(--border-subtle)'}
+                    strokeWidth="1"
+                  />
+                  <text
+                    x="0"
+                    y="4"
+                    textAnchor="middle"
+                    fill={isConfirmed ? '#ffffff' : 'var(--text-secondary)'}
+                    fontFamily="var(--font-mono)"
+                    fontSize="10"
+                    fontWeight="600"
+                  >
+                    {isConfirmed ? `${e.source_col}` : `${Math.round(e.confidence * 100)}%`}
+                  </text>
+                </g>
+              </g>
+            );
+          })}
+
+          {/* Lines from Dataset to Expanded Columns */}
+          {layout.columnNodes.map(col => {
+            const parent = layout.datasetNodes.find(d => d.id === col.datasetId);
+            if (!parent) return null;
+            return (
+              <line
+                key={`line-${col.id}`}
+                x1={parent.x}
+                y1={parent.y}
+                x2={col.x}
+                y2={col.y}
+                stroke="#27272a"
+                strokeWidth="1"
+              />
+            );
+          })}
+
+          {/* Expanded Column Nodes */}
+          {layout.columnNodes.map(col => (
+            <g
+              key={col.id}
+              transform={`translate(${col.x}, ${col.y})`}
+              onClick={() => { setSelectedNode({ ...col, type: 'column' }); setSelectedEdge(null); }}
+              style={{ cursor: 'pointer' }}
+            >
+              <circle r="8" fill="#18181b" stroke="#3f3f46" strokeWidth="1.5" />
+              <text
+                x="14"
+                y="4"
+                fill="#a1a1aa"
+                fontFamily="var(--font-mono)"
+                fontSize="10"
+              >
+                {col.name}
+              </text>
+            </g>
+          ))}
+
+          {/* Dataset Nodes */}
+          {layout.datasetNodes.map(d => {
+            const isSelected = activeDatasetId === d.id || (selectedNode && selectedNode.id === d.id);
+            const isExpanded = expandedDatasets[d.id];
+
+            return (
+              <g
+                key={d.id}
+                transform={`translate(${d.x}, ${d.y})`}
+                onClick={() => {
+                  onSelectDataset(d.id);
+                  setSelectedNode({ ...d, type: 'dataset' });
+                  setSelectedEdge(null);
+                }}
+                style={{ cursor: 'pointer' }}
+              >
+                <circle
+                  r={isSelected ? "32" : "28"}
+                  fill="#09090b"
+                  stroke={isSelected ? "#ffffff" : "#3f3f46"}
+                  strokeWidth={isSelected ? "2.5" : "1.5"}
+                />
+                <circle r="4" cy="-10" fill={d.status === 'complete' ? 'var(--accent-confirmed)' : 'var(--accent-candidate)'} />
+                <text
+                  x="0"
+                  y="6"
+                  textAnchor="middle"
+                  fill="#ffffff"
+                  fontFamily="var(--font-heading)"
+                  fontWeight="600"
+                  fontSize="11"
+                >
+                  {d.label.length > 12 ? d.label.substring(0, 10) + '..' : d.label}
+                </text>
+                <text
+                  x="0"
+                  y="18"
+                  textAnchor="middle"
+                  fill="var(--text-muted)"
+                  fontFamily="var(--font-mono)"
+                  fontSize="9"
+                >
+                  {d.rows_loaded} rows
+                </text>
+
+                {/* Plus/Minus toggle for Column Blossom */}
+                <g
+                  transform="translate(22, -22)"
+                  onClick={e => toggleExpand(d.id, e)}
+                  style={{ cursor: 'pointer' }}
+                >
+                  <circle r="9" fill="#18181b" stroke="#52525b" strokeWidth="1" />
+                  <text
+                    x="0"
+                    y="3.5"
+                    textAnchor="middle"
+                    fill="#ffffff"
+                    fontFamily="var(--font-mono)"
+                    fontSize="11"
+                    fontWeight="700"
+                  >
+                    {isExpanded ? '−' : '+'}
+                  </text>
+                </g>
+              </g>
+            );
+          })}
+        </g>
+      </svg>
+
+      {/* Side Inspector Drawer for Selected Node or Edge */}
+      {(selectedNode || selectedEdge) && (
+        <div className="inspector-drawer">
+          <div className="drawer-header">
+            <div>
+              <span className="section-tag">
+                {selectedEdge ? 'RELATIONSHIP INSPECTOR' : `${selectedNode.type.toUpperCase()} METADATA`}
+              </span>
+              <h4 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.1rem', marginTop: '0.25rem' }}>
+                {selectedEdge
+                  ? `${selectedEdge.source_filename} ↔ ${selectedEdge.target_filename}`
+                  : selectedNode.label || selectedNode.name}
+              </h4>
+            </div>
+            <button className="drawer-close" onClick={() => { setSelectedNode(null); setSelectedEdge(null); }}>✕</button>
+          </div>
+
+          {selectedEdge && (
+            <div>
+              <div style={{ marginBottom: '1.25rem' }}>
+                <span className={`status-badge ${selectedEdge.status}`}>
+                  {selectedEdge.status}
+                </span>
+                <span style={{ marginLeft: '8px', fontFamily: 'var(--font-mono)', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                  {Math.round(selectedEdge.confidence * 100)}% Confidence · {selectedEdge.cardinality}
+                </span>
+              </div>
+
+              <div style={{ background: '#111114', padding: '1rem', borderRadius: '4px', marginBottom: '1.25rem' }}>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                  JOIN KEY DEFINITION
+                </div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem' }}>
+                  <strong>{selectedEdge.source_filename}</strong>.{selectedEdge.source_col} = <strong>{selectedEdge.target_filename}</strong>.{selectedEdge.target_col}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem' }}>
+                {selectedEdge.status !== 'confirmed' && (
+                  <button className="btn-action" onClick={() => onConfirmRel(selectedEdge.id)}>
+                    ✓ Confirm Relationship
+                  </button>
+                )}
+                {selectedEdge.status !== 'rejected' && (
+                  <button className="btn-action secondary" onClick={() => onRejectRel(selectedEdge.id)}>
+                    ✕ Reject Link
+                  </button>
+                )}
+              </div>
+
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
+                JOIN EVIDENCE ({edgeMatches?.total_joined_rows || selectedEdge.overlap_count} MATCHING ROWS)
+              </div>
+
+              {loadingMatches ? (
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  Loading joined rows...
+                </div>
+              ) : edgeMatches?.matches?.length > 0 ? (
+                <div className="evidence-table-container">
+                  <table className="evidence-table">
+                    <thead>
+                      <tr>
+                        <th>Join Key</th>
+                        <th>Source Data</th>
+                        <th>Target Data</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {edgeMatches.matches.slice(0, 8).map((m, i) => (
+                        <tr key={i}>
+                          <td style={{ color: '#ffffff', fontWeight: 600 }}>{m.join_key}</td>
+                          <td>{JSON.stringify(m.source_row).substring(0, 40)}</td>
+                          <td>{JSON.stringify(m.target_row).substring(0, 40)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  Sample keys: {selectedEdge.sample_matches?.join(', ') || 'None'}
+                </div>
+              )}
+            </div>
+          )}
+
+          {selectedNode && selectedNode.type === 'dataset' && (
+            <div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
+                Dataset ID: {selectedNode.id.substring(0, 16)}...
+              </div>
+              <div style={{ marginBottom: '1rem' }}>
+                <div style={{ fontSize: '1.8rem', fontFamily: 'var(--font-heading)', fontWeight: 700 }}>
+                  {selectedNode.rows_loaded}
+                </div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  Total Persisted Rows
+                </div>
+              </div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', marginBottom: '0.5rem' }}>
+                Columns ({selectedNode.columns?.length || 0}):
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
+                {selectedNode.columns?.map(c => (
+                  <span
+                    key={c}
+                    style={{
+                      background: '#18181b',
+                      padding: '4px 8px',
+                      borderRadius: '4px',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '0.75rem',
+                      border: '1px solid var(--border-subtle)',
+                    }}
+                  >
+                    {c}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {selectedNode && selectedNode.type === 'column' && (
+            <div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
+                Parent: {selectedNode.datasetName}
+              </div>
+              <h3 style={{ fontFamily: 'var(--font-mono)', fontSize: '1.2rem', marginBottom: '1rem' }}>
+                {selectedNode.name}
+              </h3>
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                Field ready for cross-dataset relationship mapping or statistical distribution analysis.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 3. CROSS-DATASET RELATIONSHIP MANAGER COMPONENT
+// ---------------------------------------------------------------------------
+function RelationshipManager({ relationships, onConfirm, onReject, onDiscover }) {
+  const [isDiscovering, setIsDiscovering] = useState(false);
+
+  const handleDiscover = () => {
+    setIsDiscovering(true);
+    onDiscover(() => setIsDiscovering(false));
+  };
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+        <div>
+          <h3 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.25rem', fontWeight: 600 }}>
+            Discovered & Confirmed Joins
+          </h3>
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+            Automatically inferred cross-dataset keys backed by value overlap evidence.
+          </p>
+        </div>
+        <button className="btn-action" onClick={handleDiscover} disabled={isDiscovering}>
+          {isDiscovering ? 'Scanning Graph...' : '⚡ Run Discovery'}
+        </button>
+      </div>
+
+      {relationships.length === 0 ? (
+        <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem' }}>
+          No relationships found. Upload related CSVs and click "Run Discovery".
+        </div>
+      ) : (
+        <table className="relationships-table">
+          <thead>
+            <tr>
+              <th>Source Key</th>
+              <th>Target Key</th>
+              <th>Confidence</th>
+              <th>Overlap Evidence</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {relationships.map(r => (
+              <tr key={r.id}>
+                <td>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: '#ffffff' }}>
+                    {r.source_filename}
+                  </span>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                    .{r.source_col}
+                  </div>
+                </td>
+                <td>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: '#ffffff' }}>
+                    {r.target_filename}
+                  </span>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                    .{r.target_col}
+                  </div>
+                </td>
+                <td>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
+                    {Math.round(r.confidence * 100)}%
+                  </span>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                    {r.cardinality || '1:N'}
+                  </div>
+                </td>
+                <td>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }}>
+                    {r.overlap_count} overlapping values
+                  </span>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                    Sample: {r.sample_matches?.slice(0, 3).join(', ')}
+                  </div>
+                </td>
+                <td>
+                  <span className={`status-badge ${r.status}`}>
+                    {r.status}
+                  </span>
+                </td>
+                <td>
+                  <div style={{ display: 'flex', gap: '0.4rem' }}>
+                    {r.status !== 'confirmed' && (
+                      <button className="btn-action" onClick={() => onConfirm(r.id)}>
+                        Confirm
+                      </button>
+                    )}
+                    {r.status !== 'rejected' && (
+                      <button className="btn-action secondary" onClick={() => onReject(r.id)}>
+                        Reject
+                      </button>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 4. NATURAL LANGUAGE ANALYST (CHAT) COMPONENT
+// ---------------------------------------------------------------------------
+function NaturalLanguageAnalyst({ activeDatasetId, activeDatasetName, confirmedRelCount }) {
+  const [messages, setMessages] = useState([
+    {
+      role: 'assistant',
+      text: 'Graph analyst initialized. Ask questions across your single active dataset, cross-dataset joins, or the whole workspace.',
+      grounded: true,
+      time: 'Ready'
+    }
+  ]);
+  const [query, setQuery] = useState('');
+  const [scope, setScope] = useState('single'); // 'single', 'cross_dataset', 'workspace'
+  const [loading, setLoading] = useState(false);
+  const chartCanvasRef = useRef({});
+
+  const samplePrompts = [
+    'show matching records between small_clean.csv and customer_orders.csv',
+    'which csv files are connected?',
+    'how many rows are there',
+    'orders for Acme Co across datasets',
+    'show row counts per group',
+  ];
+
+  const handleSend = async (qText) => {
+    const textToSend = qText || query;
+    if (!textToSend.trim() || loading) return;
+
+    const userMsg = {
+      role: 'user',
+      text: textToSend,
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
+    setMessages(prev => [...prev, userMsg]);
+    setQuery('');
+    setLoading(true);
 
-    // Status polling effect: polls /status?job_id=... every 1.5s until complete or failed
-    useEffect(() => {
-      if (!isPolling || !jobMeta?.job_id) return;
+    try {
+      const res = await fetch('http://localhost:8000/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: textToSend,
+          dataset_id: activeDatasetId,
+          scope: scope,
+        })
+      });
+      const data = await res.json();
 
-      const fetchStatus = async () => {
-        try {
-          const res = await fetch(`${API_BASE}/status?job_id=${encodeURIComponent(jobMeta.job_id)}`);
-          if (!res.ok) {
-            setStatusError(`Could not fetch status (${res.status}).`);
-            setIsPolling(false);
-            return;
-          }
-          const data = await res.json();
-          setStatusData(data);
-
-          if (data.status === "complete" || data.status === "failed") {
-            setIsPolling(false);
-          }
-        } catch (err) {
-          setStatusError(err.message);
-          setIsPolling(false);
-          console.error(err);
-        }
+      const assistantMsg = {
+        role: 'assistant',
+        text: data.answer,
+        cypher: data.cypher,
+        result: data.result,
+        grounded: data.grounded,
+        joinUsed: data.join_used,
+        scope: data.scope,
+        chart: data.chart,
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
-
-      fetchStatus();
-      const timer = setInterval(fetchStatus, 1500);
-      return () => clearInterval(timer);
-    }, [isPolling, jobMeta?.job_id]);
-
-    // Chat submit logic with last 5 Q&A running history
-    const handleAsk = async (qText) => {
-      const q = (qText !== undefined ? qText : question).trim();
-      if (!q || isAsking) return;
-
-      setChatError("");
-      setIsAsking(true);
-
-      try {
-        const res = await fetch(`${API_BASE}/chat`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question: q }),
-        });
-        if (!res.ok) {
-          const body = await res.text();
-          throw new Error(`Server returned ${res.status}: ${body}`);
+      setMessages(prev => [...prev, assistantMsg]);
+    } catch (err) {
+      setMessages(prev => [
+        ...prev,
+        {
+          role: 'assistant',
+          text: 'Error processing question. Please check backend connection.',
+          grounded: false,
+          time: 'Error'
         }
-        const data = await res.json();
-        const entry = {
-          id: Date.now(),
-          question: q,
-          answer: data.answer || "(no answer returned)",
-          cypher: data.cypher || "(no cypher returned)",
-          result: data.result ?? [],
-          grounded: !!data.grounded,
-          time: new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-        };
-        // Prepend new entry, keeping up to 5 entries
-        setChatHistory(prev => [entry, ...prev].slice(0, 5));
-        setQuestion("");
-      } catch (err) {
-        setChatError(`Chat failed: ${err.message}`);
-        console.error(err);
-      } finally {
-        setIsAsking(false);
-      }
-    };
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    // Reset button
-    const handleReset = () => {
-      setFileName("");
-      setUploadTimestamp("");
-      setUploadError("");
-      setJobMeta(null);
-      setPreviewRows([]);
-      setPreviewHeaders([]);
-      setPreviewTotalRows(0);
-      setStatusData(null);
-      setStatusError("");
-      setIsPolling(false);
-      setQuestion("");
-      setChatError("");
-      setChatHistory([]);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    };
-
-    // Live progress percentage calculation
-    const progressPct = statusData && statusData.rows_total > 0
-      ? Math.min(100, Math.round(((statusData.rows_loaded || 0) / statusData.rows_total) * 100))
-      : 0;
-
-    return (
-      <div className="container">
-        {/* Top Navigation & System Status Strip */}
-        <div className="top-nav">
-          <div className="brand-tag">RISE · Pipeline &amp; Graph</div>
-          <div className="system-strip" title="Infrastructure Connectivity">
-            <span className="system-node">
-              <span className={`status-dot ${health.api ? "online" : "offline"}`} /> API
-            </span>
-            <span className="system-node">
-              <span className={`status-dot ${health.kafka ? "online" : "offline"}`} /> KAFKA
-            </span>
-            <span className="system-node">
-              <span className={`status-dot ${health.neo4j ? "online" : "offline"}`} /> NEO4J
-            </span>
+  return (
+    <div className="chat-box">
+      {/* Controls Bar */}
+      <div className="chat-controls-bar">
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+            ANALYSIS SCOPE:
+          </span>
+          <div className="scope-selector">
+            <button
+              className={`scope-btn ${scope === 'single' ? 'active' : ''}`}
+              onClick={() => setScope('single')}
+            >
+              Single Dataset
+            </button>
+            <button
+              className={`scope-btn ${scope === 'cross_dataset' ? 'active' : ''}`}
+              onClick={() => setScope('cross_dataset')}
+            >
+              Cross-Dataset Joins
+            </button>
+            <button
+              className={`scope-btn ${scope === 'workspace' ? 'active' : ''}`}
+              onClick={() => setScope('workspace')}
+            >
+              Workspace All
+            </button>
           </div>
         </div>
 
-        {/* Hero Header */}
-        <header>
-          <h1>Data In, Answers Out</h1>
-          <p className="subtitle">
-            A real-time CSV pipeline streaming through Kafka into a Neo4j knowledge graph, answering grounded queries with architectural proof.
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+          Active File: <strong style={{ color: '#fff' }}>{activeDatasetName || 'None'}</strong>
+        </div>
+      </div>
+
+      {/* Suggested Chips */}
+      <div className="prompt-chips">
+        {samplePrompts.map((p, idx) => (
+          <div key={idx} className="prompt-chip" onClick={() => handleSend(p)}>
+            {p}
+          </div>
+        ))}
+      </div>
+
+      {/* History */}
+      <div className="chat-history">
+        {messages.map((m, idx) => (
+          <div key={idx} className={`chat-message ${m.role}`}>
+            <div className="msg-meta">
+              <span>{m.role === 'user' ? 'YOU' : 'GRAPHSENSE ENGINE'}</span>
+              <span>{m.time}</span>
+            </div>
+            <div className="msg-text">{m.text}</div>
+
+            {/* Join Metadata Badge */}
+            {m.joinUsed && (
+              <div className="join-badge">
+                <span>⚡ JOIN PATH:</span>
+                <strong>{m.joinUsed.source_dataset || 'Source'} ({m.joinUsed.source_col})</strong>
+                <span>=</span>
+                <strong>{m.joinUsed.target_dataset || 'Target'} ({m.joinUsed.target_col})</strong>
+                <span>[{m.joinUsed.status}]</span>
+              </div>
+            )}
+
+            {/* Inspectable Cypher query */}
+            {m.cypher && (
+              <details style={{ marginTop: '0.75rem', cursor: 'pointer' }}>
+                <summary style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                  View Grounded Cypher & Evidence ({m.result ? (Array.isArray(m.result) ? m.result.length : '1') : 0} rows)
+                </summary>
+                <pre
+                  style={{
+                    background: '#0c0c0e',
+                    padding: '0.75rem',
+                    borderRadius: '4px',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '0.75rem',
+                    overflowX: 'auto',
+                    margin: '0.5rem 0',
+                    border: '1px solid var(--border-subtle)',
+                    color: '#e4e4e7',
+                  }}
+                >
+                  {m.cypher.trim()}
+                </pre>
+                {Array.isArray(m.result) && m.result.length > 0 && (
+                  <div className="evidence-table-container">
+                    <table className="evidence-table">
+                      <thead>
+                        <tr>
+                          {Object.keys(m.result[0]).map(k => (
+                            <th key={k}>{k}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {m.result.slice(0, 5).map((row, rIdx) => (
+                          <tr key={rIdx}>
+                            {Object.values(row).map((val, vIdx) => (
+                              <td key={vIdx}>{typeof val === 'object' ? JSON.stringify(val) : String(val)}</td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </details>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Input */}
+      <div className="chat-input-bar">
+        <input
+          type="text"
+          className="chat-input"
+          placeholder="Ask a question about the active data or cross-dataset connections..."
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && handleSend()}
+          disabled={loading}
+        />
+        <button className="btn-action" onClick={() => handleSend()} disabled={loading}>
+          {loading ? 'Querying...' : 'Ask Analyst'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 5. DATA QUALITY & ANOMALIES COMPONENT
+// ---------------------------------------------------------------------------
+function QualityReport({ qualityData }) {
+  if (!qualityData) {
+    return <div style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>Loading quality data...</div>;
+  }
+
+  return (
+    <div>
+      <div className="quality-metrics-row">
+        <div className="health-gauge-box">
+          <div className="gauge-circle">
+            {qualityData.health_score}%
+          </div>
+          <div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+              Dataset Health Score
+            </div>
+            <div style={{ fontSize: '0.95rem', fontWeight: 600, color: '#fff', marginTop: '4px' }}>
+              {qualityData.health_score > 85 ? 'Pristine Health' : 'Quality Warnings Detected'}
+            </div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+              Evaluates missing cells, duplicate signatures, and Tukey's statistical outliers.
+            </div>
+          </div>
+        </div>
+
+        <div className="metric-surface">
+          <span className="metric-label">Missing Cells Rate</span>
+          <div className="metric-value">{qualityData.missing_cell_percentage}%</div>
+          <span className="metric-footnote">{qualityData.total_missing_cells} cells out of total</span>
+        </div>
+
+        <div className="metric-surface">
+          <span className="metric-label">Statistical Outliers</span>
+          <div className="metric-value">{qualityData.outliers?.length || 0}</div>
+          <span className="metric-footnote">Tukey's IQR 1.5× Fences Rule</span>
+        </div>
+      </div>
+
+      {/* Outliers breakdown */}
+      {qualityData.outliers?.length > 0 && (
+        <div style={{ marginTop: '1.5rem' }}>
+          <h4 style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+            STATISTICAL ANOMALY REPORT (TUKEY'S IQR)
+          </h4>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem' }}>
+            {qualityData.outliers.map(o => (
+              <div key={o.column} style={{ background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', padding: '1rem', borderRadius: '4px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                  <strong style={{ fontFamily: 'var(--font-mono)', color: '#ffffff' }}>{o.column}</strong>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--accent-candidate)' }}>
+                    {o.outlier_count} outliers ({o.outlier_percentage}%)
+                  </span>
+                </div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                  Normal Bounds: [{o.lower_bound}, {o.upper_bound}] · IQR: {o.iqr}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 6. STREAM PIPELINE & DROPZONE COMPONENT
+// ---------------------------------------------------------------------------
+function StreamPipeline({ onUploadSuccess }) {
+  const [uploading, setUploading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState(null);
+
+  const handleFileChange = async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setUploading(true);
+    setUploadStatus('Publishing rows to Apache Kafka topic csv-rows...');
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const res = await fetch('http://localhost:8000/ingest', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json();
+      if (res.status === 202) {
+        setUploadStatus(`Queued: ${data.rows_received} rows streaming via Kafka into Neo4j.`);
+        if (onUploadSuccess) onUploadSuccess(data.job_id);
+      } else {
+        setUploadStatus(`Error: ${data.detail || 'Upload failed'}`);
+      }
+    } catch (err) {
+      setUploadStatus('Network error during ingest.');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <div>
+      <label className="dropzone">
+        <input type="file" accept=".csv" onChange={handleFileChange} style={{ display: 'none' }} />
+        <div style={{ fontFamily: 'var(--font-heading)', fontSize: '1.25rem', fontWeight: 600, color: '#ffffff' }}>
+          {uploading ? 'Publishing to Kafka Stream...' : 'Drop CSV file here or click to browse'}
+        </div>
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
+          Asynchronous streaming pipeline · SHA-256 Idempotent Dedup · Schema Uniqueness Indexing
+        </div>
+      </label>
+
+      {uploadStatus && (
+        <div style={{ marginTop: '1rem', fontFamily: 'var(--font-mono)', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+          {uploadStatus}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 7. MAIN APPLICATION ORCHESTRATOR
+// ---------------------------------------------------------------------------
+function App() {
+  const [activeSection, setActiveSection] = useState('overview');
+  const [datasets, setDatasets] = useState([]);
+  const [activeDatasetId, setActiveDatasetId] = useState(null);
+  const [graphData, setGraphData] = useState(null);
+  const [relationships, setRelationships] = useState([]);
+  const [qualityData, setQualityData] = useState(null);
+
+  // Section collapse state
+  const [openSections, setOpenSections] = useState({
+    overview: true,
+    visualizer: true,
+    relationships: true,
+    chat: true,
+    quality: true,
+    pipeline: true,
+  });
+
+  const toggleSection = id => {
+    setOpenSections(prev => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const scrollToSection = id => {
+    setActiveSection(id);
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const refreshWorkspace = () => {
+    fetch('http://localhost:8000/datasets')
+      .then(r => r.json())
+      .then(dList => {
+        setDatasets(dList);
+        if (!activeDatasetId && dList.length > 0) {
+          setActiveDatasetId(dList[0].id);
+        }
+      });
+
+    fetch('http://localhost:8000/workspace/graph')
+      .then(r => r.json())
+      .then(g => setGraphData(g));
+
+    fetch('http://localhost:8000/relationships')
+      .then(r => r.json())
+      .then(rels => setRelationships(rels));
+  };
+
+  useEffect(() => {
+    refreshWorkspace();
+    const interval = setInterval(refreshWorkspace, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Fetch quality metrics when active dataset changes
+  useEffect(() => {
+    if (activeDatasetId) {
+      fetch(`http://localhost:8000/analytics/quality?job_id=${activeDatasetId}`)
+        .then(r => r.json())
+        .then(q => setQualityData(q));
+    }
+  }, [activeDatasetId]);
+
+  const handleConfirmRel = relId => {
+    fetch(`http://localhost:8000/relationships/${relId}/confirm`, { method: 'POST' })
+      .then(() => refreshWorkspace());
+  };
+
+  const handleRejectRel = relId => {
+    fetch(`http://localhost:8000/relationships/${relId}/reject`, { method: 'POST' })
+      .then(() => refreshWorkspace());
+  };
+
+  const handleDiscover = callback => {
+    fetch('http://localhost:8000/relationships/discover', { method: 'POST' })
+      .then(() => {
+        refreshWorkspace();
+        if (callback) callback();
+      });
+  };
+
+  const activeDataset = datasets.find(d => d.id === activeDatasetId);
+  const confirmedRelCount = relationships.filter(r => r.status === 'confirmed').length;
+
+  return (
+    <div className="studio-layout">
+      {/* Liquid Sidebar Navigation */}
+      <LiquidSidebar
+        activeSection={activeSection}
+        onNavigate={scrollToSection}
+        datasetCount={datasets.length}
+        confirmedRelCount={confirmedRelCount}
+      />
+
+      {/* Main Workspace Stage */}
+      <main className="main-stage">
+        <header style={{ marginBottom: '2.5rem' }}>
+          <span className="section-tag">EXPERIMENTAL DATA STUDIO · RISE @ RST #5</span>
+          <h1 className="editorial-title">GraphSense Spatial Workspace</h1>
+          <p className="editorial-sub">
+            Monochromatic, typography-led streaming analytics environment. Explore independent CSV structures,
+            discover topological candidate relationships, and conduct grounded cross-dataset reasoning.
           </p>
         </header>
 
-        {/* Section 1: Upload CSV */}
-        <section className="section-row">
-          <div className="section-header">
-            <span className="section-label">Upload CSV</span>
-            {jobMeta && (
-              <button className="section-action-btn" onClick={handleReset} title="Reset all state without refreshing">
-                Reset / New Upload
-              </button>
-            )}
+        {/* 01. WORKSPACE OVERVIEW */}
+        <section id="overview" className={`workspace-section ${openSections.overview ? 'open' : ''}`}>
+          <div className="section-accordion-header" onClick={() => toggleSection('overview')}>
+            <div className="header-left">
+              <span className="section-num">01 //</span>
+              <span className="section-name">Workspace Overview</span>
+            </div>
+            <span className="section-collapse-icon">▼</span>
           </div>
 
-          <div
-            className={`dropzone ${isDragOver ? "dragover" : ""}`}
-            id="dropzone"
-            onClick={() => fileInputRef.current && fileInputRef.current.click()}
-            onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
-            onDragLeave={() => setIsDragOver(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setIsDragOver(false);
-              if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
-            }}
-          >
-            <input
-              type="file"
-              id="fileInput"
-              ref={fileInputRef}
-              accept=".csv"
-              onChange={(e) => {
-                if (e.target.files.length) handleFile(e.target.files[0]);
-              }}
-            />
-            <div className="dropzone-callout" id="dropzoneText">
-              {fileName ? fileName : "Select a spreadsheet to ingest"}
-            </div>
-            <div className="dropzone-sub">
-              {fileName ? "Click or drag another to replace" : "Drop CSV file here, or click to browse"}
-            </div>
-            <div id="filename" style={{ display: "none" }}>{fileName}</div>
-          </div>
+          {openSections.overview && (
+            <div className="section-content">
+              <div className="overview-grid">
+                <div className="metric-surface">
+                  <span className="metric-label">Loaded Datasets</span>
+                  <div className="metric-value">{datasets.length}</div>
+                  <span className="metric-footnote">Distinct SHA-256 identities</span>
+                </div>
 
-          {fileName && (
-            <div className="file-stamp-row">
-              <span className="file-stamp-name">{fileName}</span>
-              <span className="file-stamp-time">uploaded {uploadTimestamp}</span>
-            </div>
-          )}
-
-          {uploadError && <div className="error-box" id="uploadError">{uploadError}</div>}
-
-          {jobMeta && (
-            <div className="meta-row" id="ingestMeta">
-              <div className="meta-item">JOB ID <strong id="metaJobId">{jobMeta.job_id ?? "—"}</strong></div>
-              <div className="meta-item">RECEIVED <strong id="metaRowsReceived">{jobMeta.rows_received ?? "—"}</strong></div>
-              <div className="meta-item">STATUS <strong id="metaStatus">{jobMeta.status ?? "—"}</strong></div>
-            </div>
-          )}
-        </section>
-
-        {/* Section 2: Load Status & Data Figures */}
-        <section className="section-row">
-          <div className="section-header">
-            <span className="section-label">Load Status</span>
-            <div id="statusPanel">
-              {statusData ? (
-                <span className={`status-text-badge status-text-${statusData.status || "queued"}`}>
-                  {(statusData.status === "queued" || statusData.status === "loading") && (
-                    <span className="spinner" />
-                  )}
-                  {statusData.status || "unknown"}
-                </span>
-              ) : (
-                <span className="status-text-badge status-text-awaiting">Awaiting data</span>
-              )}
-            </div>
-          </div>
-
-          {/* 3-Column Large Serif Figures */}
-          <div className="figures-grid">
-            <div className="figure-col">
-              <div className="figure-number">
-                {statusData ? (statusData.rows_total ?? "—") : "—"}
-              </div>
-              <div className="figure-label">Total Rows</div>
-            </div>
-            <div className="figure-col">
-              <div className="figure-number loaded">
-                {statusData ? (statusData.rows_loaded ?? 0) : "—"}
-              </div>
-              <div className="figure-label">Loaded to Graph</div>
-            </div>
-            <div className="figure-col">
-              <div className={`figure-number ${statusData && statusData.rows_failed > 0 ? "failed" : ""}`}>
-                {statusData ? (statusData.rows_failed ?? 0) : "—"}
-              </div>
-              <div className="figure-label">Failed</div>
-            </div>
-          </div>
-
-          {/* Minimal Progress Bar */}
-          {statusData && (
-            <div className="progress-wrap">
-              <div className="progress-bar-bg">
-                <div className="progress-bar-fill" style={{ width: `${progressPct}%` }}></div>
-              </div>
-              <div className="progress-label">
-                <span>INGESTION COMPLETION</span>
-                <span>{progressPct}% ({statusData.rows_loaded ?? 0} / {statusData.rows_total ?? 0})</span>
-              </div>
-            </div>
-          )}
-
-          {statusError && <div className="error-box">{statusError}</div>}
-
-          {/* CSV Preview Table */}
-          <div className="table-wrap" id="previewTableWrap">
-            {previewHeaders.length > 0 && (
-              <>
-                <table>
-                  <thead>
-                    <tr>
-                      {previewHeaders.map((h, i) => (
-                        <th key={i}>{h.trim()}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {previewRows.map((r, rIdx) => (
-                      <tr key={rIdx}>
-                        {r.map((cell, cIdx) => (
-                          <td key={cIdx}>{(cell || "").trim()}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {previewTotalRows > 10 && (
-                  <div className="empty-state" style={{ marginTop: "0.75rem" }}>
-                    Showing first 10 of {previewTotalRows} rows (preview only — server parses full dataset).
+                <div className="metric-surface">
+                  <span className="metric-label">Total Ingested Rows</span>
+                  <div className="metric-value">
+                    {graphData?.stats?.total_rows?.toLocaleString() || 0}
                   </div>
-                )}
-              </>
-            )}
-          </div>
-        </section>
-
-        {/* Section 3: Ask Your Data */}
-        <section className="section-row" style={{ borderBottom: "none", paddingBottom: 0 }}>
-          <div className="section-header">
-            <span className="section-label">Ask Your Data</span>
-          </div>
-
-          {/* Suggestion Chips */}
-          <div className="example-chips">
-            {[
-              "How many rows in total?",
-              "What columns exist in this dataset?",
-              "Show top 5 by amount",
-              "How many rows belong to Billing?"
-            ].map((chipText, i) => (
-              <button
-                key={i}
-                type="button"
-                className="chip"
-                onClick={() => {
-                  setQuestion(chipText);
-                  handleAsk(chipText);
-                }}
-                disabled={isAsking}
-              >
-                {chipText}
-              </button>
-            ))}
-          </div>
-
-          <div className="chat-input-row">
-            <input
-              type="text"
-              id="chatInput"
-              placeholder="Ask anything about the graph..."
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleAsk();
-              }}
-              disabled={isAsking}
-            />
-            <button
-              id="chatBtn"
-              className="action-btn"
-              onClick={() => handleAsk()}
-              disabled={isAsking || !question.trim()}
-            >
-              {isAsking ? "Querying…" : "Ask"}
-            </button>
-          </div>
-
-          {chatError && <div id="chatError" className="error-box">{chatError}</div>}
-
-          {/* Chat Stream (Last 5 Q&A Pairs) */}
-          <div id="chatResult" className="chat-stream">
-            {chatHistory.map((item, index) => (
-              <div
-                key={item.id}
-                className={`chat-entry ${index === 0 ? "recent" : "older"}`}
-              >
-                <div className="chat-entry-header">
-                  <div className="chat-q-text">"{item.question}"</div>
-                  <span className={`grounded-label ${item.grounded ? "is-grounded" : "not-grounded"}`}>
-                    {item.grounded ? "Grounded" : "Not Grounded"}
-                  </span>
+                  <span className="metric-footnote">Deduplicated graph persistence</span>
                 </div>
 
-                <div className="chat-answer-serif">
-                  {item.answer}
+                <div className="metric-surface">
+                  <span className="metric-label">Confirmed Joins</span>
+                  <div className="metric-value" style={{ color: 'var(--accent-confirmed)' }}>
+                    {confirmedRelCount}
+                  </div>
+                  <span className="metric-footnote">Verified cross-dataset connections</span>
                 </div>
 
-                <details>
-                  <summary>View Cypher query &amp; result</summary>
-                  <pre>{item.cypher}</pre>
-                  <pre>{JSON.stringify(item.result, null, 2)}</pre>
-                </details>
+                <div className="metric-surface">
+                  <span className="metric-label">Candidate Links</span>
+                  <div className="metric-value" style={{ color: 'var(--accent-candidate)' }}>
+                    {relationships.filter(r => r.status === 'candidate').length}
+                  </div>
+                  <span className="metric-footnote">Pending user confirmation</span>
+                </div>
               </div>
-            ))}
-          </div>
-        </section>
-      </div>
-    );
-  }
 
-  // Mount React Root
-  const root = ReactDOM.createRoot(document.getElementById("root"));
-  root.render(<App />);
+              {/* Dataset quick selection strip */}
+              <div style={{ marginTop: '1rem' }}>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                  ACTIVE CSV CONTEXT:
+                </span>
+                <div className="dataset-strip">
+                  {datasets.map(d => (
+                    <div
+                      key={d.id}
+                      className={`dataset-pill ${activeDatasetId === d.id ? 'active' : ''}`}
+                      onClick={() => setActiveDatasetId(d.id)}
+                    >
+                      <span className="dataset-pill-name">{d.filename}</span>
+                      <span className="dataset-pill-rows">{d.rows_loaded} rows</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
+
+        {/* 02. INTERACTIVE NODE VISUALIZER */}
+        <section id="visualizer" className={`workspace-section ${openSections.visualizer ? 'open' : ''}`}>
+          <div className="section-accordion-header" onClick={() => toggleSection('visualizer')}>
+            <div className="header-left">
+              <span className="section-num">02 //</span>
+              <span className="section-name">Node-Based CSV Visualizer</span>
+            </div>
+            <span className="section-collapse-icon">▼</span>
+          </div>
+
+          {openSections.visualizer && (
+            <div className="section-content" style={{ padding: '0.5rem' }}>
+              <NodeVisualizer
+                graphData={graphData}
+                onConfirmRel={handleConfirmRel}
+                onRejectRel={handleRejectRel}
+                activeDatasetId={activeDatasetId}
+                onSelectDataset={setActiveDatasetId}
+              />
+            </div>
+          )}
+        </section>
+
+        {/* 03. CROSS-DATASET RELATIONSHIP MANAGER */}
+        <section id="relationships" className={`workspace-section ${openSections.relationships ? 'open' : ''}`}>
+          <div className="section-accordion-header" onClick={() => toggleSection('relationships')}>
+            <div className="header-left">
+              <span className="section-num">03 //</span>
+              <span className="section-name">Cross-Dataset Relationships</span>
+            </div>
+            <span className="section-collapse-icon">▼</span>
+          </div>
+
+          {openSections.relationships && (
+            <div className="section-content">
+              <RelationshipManager
+                relationships={relationships}
+                onConfirm={handleConfirmRel}
+                onReject={handleRejectRel}
+                onDiscover={handleDiscover}
+              />
+            </div>
+          )}
+        </section>
+
+        {/* 04. NATURAL LANGUAGE ANALYST (CHAT) */}
+        <section id="chat" className={`workspace-section ${openSections.chat ? 'open' : ''}`}>
+          <div className="section-accordion-header" onClick={() => toggleSection('chat')}>
+            <div className="header-left">
+              <span className="section-num">04 //</span>
+              <span className="section-name">Natural-Language Graph Analyst</span>
+            </div>
+            <span className="section-collapse-icon">▼</span>
+          </div>
+
+          {openSections.chat && (
+            <div className="section-content">
+              <NaturalLanguageAnalyst
+                activeDatasetId={activeDatasetId}
+                activeDatasetName={activeDataset?.filename}
+                confirmedRelCount={confirmedRelCount}
+              />
+            </div>
+          )}
+        </section>
+
+        {/* 05. DATA QUALITY & ANOMALIES */}
+        <section id="quality" className={`workspace-section ${openSections.quality ? 'open' : ''}`}>
+          <div className="section-accordion-header" onClick={() => toggleSection('quality')}>
+            <div className="header-left">
+              <span className="section-num">05 //</span>
+              <span className="section-name">Data Quality & Statistical Anomalies</span>
+            </div>
+            <span className="section-collapse-icon">▼</span>
+          </div>
+
+          {openSections.quality && (
+            <div className="section-content">
+              <QualityReport qualityData={qualityData} />
+            </div>
+          )}
+        </section>
+
+        {/* 06. STREAM PIPELINE INGESTION */}
+        <section id="pipeline" className={`workspace-section ${openSections.pipeline ? 'open' : ''}`}>
+          <div className="section-accordion-header" onClick={() => toggleSection('pipeline')}>
+            <div className="header-left">
+              <span className="section-num">06 //</span>
+              <span className="section-name">Stream Ingestion Pipeline</span>
+            </div>
+            <span className="section-collapse-icon">▼</span>
+          </div>
+
+          {openSections.pipeline && (
+            <div className="section-content">
+              <StreamPipeline onUploadSuccess={refreshWorkspace} />
+            </div>
+          )}
+        </section>
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
 </script>
+
 </body>
 </html>

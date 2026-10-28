@@ -40,6 +40,10 @@ _SCHEMA_WORDS = re.compile(
 _ROW_LOOKUP = re.compile(r"\brow\s*(?:index|number|#)?\s*(\d+)\b", re.IGNORECASE)
 _GROUPBY_WORDS = re.compile(r"\b(per|by|for each|each|breakdown (?:of|by))\b", re.IGNORECASE)
 _TOPN_WORDS = re.compile(r"\btop\s*(\d+)\b|\bhighest\s*(\d+)\b|\blowest\s*(\d+)\b", re.IGNORECASE)
+_CROSS_DATASET_WORDS = re.compile(
+    r"\b(connect|connected|connection|relationship|relationships|join|match(?:ing)?|across|between|both datasets|in these two)\b",
+    re.IGNORECASE,
+)
 # Words implying the question intends a filter even when no column name/value could be
 # resolved (e.g. "how many rows belong to Nonexistent") — distinguishes "no filter intended"
 # from "filter intended but unresolvable", so we don't silently answer the wrong question.
@@ -171,7 +175,7 @@ def _distinct_values_intent(driver, database, question, columns):
     return {"answer": f"Distinct values of {column}: {', '.join(map(str, values))}.", "cypher": cypher, "result": result, "grounded": True}
 
 
-def _groupby_count_intent(driver, database, question, columns):
+def _groupby_count_intent(driver, database, question, columns, dataset_id=None):
     if not (_GROUPBY_WORDS.search(question) and _COUNT_WORDS.search(question)):
         return None
     matched = _matched_columns(question, columns)
@@ -179,10 +183,32 @@ def _groupby_count_intent(driver, database, question, columns):
         return None
     column = matched[0]
     col = _quote_ident(column)
-    cypher = f"MATCH (r:Row) RETURN r.{col} AS value, count(r) AS count ORDER BY count DESC LIMIT 50"
-    result = _run(driver, database, cypher, {})
+    cypher = (
+        f"MATCH (r:Row) WHERE r.{col} IS NOT NULL AND ($dataset_id IS NULL OR r.dataset_id = $dataset_id) "
+        f"RETURN r.{col} AS value, count(r) AS count ORDER BY count DESC LIMIT 50"
+    )
+    result = _run(driver, database, cypher, {"dataset_id": dataset_id})
     parts = "; ".join(f"{row['value']}: {row['count']}" for row in result)
-    return {"answer": f"Row counts by {column} — {parts}.", "cypher": cypher, "result": result, "grounded": True}
+    
+    chart_data = [
+        {"category": str(row["value"]) if row["value"] is not None else "(empty)", "count": row["count"]}
+        for row in result[:15]
+    ]
+    chart = {
+        "type": "bar",
+        "title": f"Count by {column}",
+        "x_key": "category",
+        "y_key": "count",
+        "data": chart_data,
+    } if chart_data else None
+
+    return {
+        "answer": f"Row counts by {column} — {parts}.",
+        "cypher": cypher,
+        "result": result,
+        "grounded": True,
+        "chart": chart,
+    }
 
 
 def _topn_intent(driver, database, question, columns):
@@ -201,10 +227,37 @@ def _topn_intent(driver, database, question, columns):
         f"RETURN r ORDER BY toFloat(r.{col}) {direction} LIMIT $n"
     )
     result = _run(driver, database, cypher, {"n": n})
-    return {"answer": f"Top {len(result)} row(s) by {column} ({direction.lower()}ending).", "cypher": cypher, "result": result, "grounded": True}
+
+    chart_data = []
+    label_col = next((c for c in columns if c != column), "row_index")
+    for row in result[:15]:
+        r_data = row.get("r", {})
+        val = r_data.get(column)
+        lbl = r_data.get(label_col, r_data.get("row_index", "Row"))
+        try:
+            num_val = float(val) if val is not None else 0.0
+            chart_data.append({"label": str(lbl), "value": num_val})
+        except (ValueError, TypeError):
+            pass
+
+    chart = {
+        "type": "bar",
+        "title": f"Top {len(result)} by {column}",
+        "x_key": "label",
+        "y_key": "value",
+        "data": chart_data,
+    } if chart_data else None
+
+    return {
+        "answer": f"Top {len(result)} row(s) by {column} ({direction.lower()}ending).",
+        "cypher": cypher,
+        "result": result,
+        "grounded": True,
+        "chart": chart,
+    }
 
 
-def _aggregate_intent(driver, database, question, columns):
+def _aggregate_intent(driver, database, question, columns, dataset_id=None):
     func = _extract_agg_func(question)
     if not func:
         return None
@@ -219,23 +272,27 @@ def _aggregate_intent(driver, database, question, columns):
         filter_col = matched[1]
         value = _find_equality(question, filter_col, driver, database)
     if value is None:
-        # e.g. "average amount for Billing" — no column name for the filter, just the value.
         other_cols = [c for c in columns if c != target_col]
         filter_col, value = _find_any_filter(question, other_cols, driver, database)
 
     if value is None and _FILTER_INTENT_WORDS.search(question):
-        # Filter-intent words present ("for X", "where X") but nothing resolved — don't
-        # silently aggregate over the whole dataset as if no filter was asked for.
         return None
 
-    where_clause, params = "", {}
+    params = {}
+    where_parts = []
+    prefix = "MATCH (r:Row) "
+    if dataset_id:
+        prefix = "MATCH (d:Dataset {id: $dataset_id})-[:HAS_ROW]->(r:Row) "
+        params["dataset_id"] = dataset_id
+
     if filter_col and value is not None:
-        where_clause = f"WHERE r.{_quote_ident(filter_col)} = $value "
+        where_parts.append(f"r.{_quote_ident(filter_col)} = $value")
         params["value"] = value
 
+    where_clause = f"WHERE {' AND '.join(where_parts)} " if where_parts else ""
     col = _quote_ident(target_col)
     cypher = (
-        f"MATCH (r:Row) {where_clause}"
+        f"{prefix}{where_clause}"
         f"WITH toFloat(r.{col}) AS v WHERE v IS NOT NULL RETURN {func}(v) AS result"
     )
     result = _run(driver, database, cypher, params)
@@ -244,61 +301,71 @@ def _aggregate_intent(driver, database, question, columns):
     return {"answer": f"The {func} of {target_col}{filter_desc} is {value}.", "cypher": cypher, "result": result, "grounded": True}
 
 
-def _count_intent(driver, database, question, columns):
+def _count_intent(driver, database, question, columns, dataset_id=None):
     if not _COUNT_WORDS.search(question):
         return None
 
     matched = _matched_columns(question, columns)
     filter_col = matched[0] if matched else None
 
+    prefix = "MATCH (r:Row) "
+    base_params = {}
+    if dataset_id:
+        prefix = "MATCH (d:Dataset {id: $dataset_id})-[:HAS_ROW]->(r:Row) "
+        base_params["dataset_id"] = dataset_id
+
     op = _extract_comparison(question)
     if filter_col and op:
         number = _extract_number(question)
         if number is not None:
             col = _quote_ident(filter_col)
-            cypher = f"MATCH (r:Row) WHERE toFloat(r.{col}) {op} $n RETURN count(r) AS count"
-            result = _run(driver, database, cypher, {"n": number})
+            cypher = f"{prefix}WHERE toFloat(r.{col}) {op} $n RETURN count(r) AS count"
+            params = {**base_params, "n": number}
+            result = _run(driver, database, cypher, params)
             count = result[0]["count"] if result else 0
             return {"answer": f"There are {count} rows where {filter_col} {op} {number}.", "cypher": cypher, "result": result, "grounded": True}
 
     value = _find_equality(question, filter_col, driver, database) if filter_col else None
     if value is None:
-        # No column name mentioned (or no matching value for it) — try inferring from any
-        # column's values, e.g. "how many rows belong to Billing" with no "group" in the text.
         filter_col, value = _find_any_filter(question, columns, driver, database)
 
     if filter_col and value is not None:
         col = _quote_ident(filter_col)
-        cypher = f"MATCH (r:Row) WHERE toLower(r.{col}) = toLower($value) RETURN count(r) AS count"
-        result = _run(driver, database, cypher, {"value": value})
+        cypher = f"{prefix}WHERE toLower(r.{col}) = toLower($value) RETURN count(r) AS count"
+        params = {**base_params, "value": value}
+        result = _run(driver, database, cypher, params)
         count = result[0]["count"] if result else 0
         return {"answer": f"There are {count} rows where {filter_col} = '{value}'.", "cypher": cypher, "result": result, "grounded": True}
 
     if not matched and not _FILTER_INTENT_WORDS.search(question):
-        cypher = "MATCH (r:Row) RETURN count(r) AS count"
-        result = _run(driver, database, cypher, {})
+        cypher = f"{prefix}RETURN count(r) AS count"
+        result = _run(driver, database, cypher, base_params)
         count = result[0]["count"] if result else 0
-        return {"answer": f"There are {count} rows in total.", "cypher": cypher, "result": result, "grounded": True}
+        scope_txt = " in this dataset" if dataset_id else " in total"
+        return {"answer": f"There are {count} rows{scope_txt}.", "cypher": cypher, "result": result, "grounded": True}
 
-    # Either a column was named but no filter resolved, or filter-intent words (e.g. "belong
-    # to") suggest a filter was meant but couldn't be resolved — don't silently answer the
-    # unfiltered question instead; let the LLM tier or an honest "I don't know" handle it.
     return None
 
 
-def _list_intent(driver, database, question, columns):
+def _list_intent(driver, database, question, columns, dataset_id=None):
     if not _LIST_WORDS.search(question):
         return None
     matched = _matched_columns(question, columns)
     filter_col = matched[0] if matched else None
+
+    prefix = "MATCH (r:Row) "
+    base_params = {}
+    if dataset_id:
+        prefix = "MATCH (d:Dataset {id: $dataset_id})-[:HAS_ROW]->(r:Row) "
+        base_params["dataset_id"] = dataset_id
 
     op = _extract_comparison(question)
     if filter_col and op:
         number = _extract_number(question)
         if number is not None:
             col = _quote_ident(filter_col)
-            cypher = f"MATCH (r:Row) WHERE toFloat(r.{col}) {op} $n RETURN r LIMIT 20"
-            result = _run(driver, database, cypher, {"n": number})
+            cypher = f"{prefix}WHERE toFloat(r.{col}) {op} $n RETURN r LIMIT 20"
+            result = _run(driver, database, cypher, {**base_params, "n": number})
             return {"answer": f"Found {len(result)} row(s) where {filter_col} {op} {number}.", "cypher": cypher, "result": result, "grounded": True}
 
     value = _find_equality(question, filter_col, driver, database) if filter_col else None
@@ -307,8 +374,8 @@ def _list_intent(driver, database, question, columns):
 
     if filter_col and value is not None:
         col = _quote_ident(filter_col)
-        cypher = f"MATCH (r:Row) WHERE toLower(r.{col}) = toLower($value) RETURN r LIMIT 20"
-        result = _run(driver, database, cypher, {"value": value})
+        cypher = f"{prefix}WHERE toLower(r.{col}) = toLower($value) RETURN r LIMIT 20"
+        result = _run(driver, database, cypher, {**base_params, "value": value})
         return {"answer": f"Found {len(result)} row(s) where {filter_col} = '{value}'.", "cypher": cypher, "result": result, "grounded": True}
 
     return None
@@ -336,8 +403,183 @@ def _dataset_status_intent(driver, database, question, columns):
     return {"answer": f"{n} dataset{'s' if n != 1 else ''} loaded.", "cypher": cypher, "result": result, "grounded": True}
 
 
+def _cross_dataset_intent(driver, database, question: str, columns: list[str], dataset_id: str | None = None, scope: str = "single", dataset_ids: list[str] | None = None):
+    is_cross_scope = scope in ("cross_dataset", "selected", "workspace") or (dataset_ids and len(dataset_ids) > 1)
+    has_cross_words = bool(_CROSS_DATASET_WORDS.search(question))
+    
+    cypher_rels = """
+    MATCH (r:DatasetRelation)
+    RETURN r.id AS id, r.source_id AS source_id, r.target_id AS target_id,
+           r.source_filename AS source_filename, r.target_filename AS target_filename,
+           r.source_col AS source_col, r.target_col AS target_col,
+           r.confidence AS confidence, r.overlap_count AS overlap_count,
+           r.cardinality AS cardinality, r.status AS status,
+           r.sample_matches AS sample_matches
+    ORDER BY r.confidence DESC
+    """
+    rels = _run(driver, database, cypher_rels, {})
+
+    rel_status_words = re.compile(r"\b(which csv.*connected|connected datasets|what relationships|show connections|show relationships|how are.*connected)\b", re.IGNORECASE)
+    if rel_status_words.search(question) or (has_cross_words and ("connected" in question.lower() or "relationship" in question.lower())):
+        confirmed = [r for r in rels if r["status"] == "confirmed"]
+        candidates = [r for r in rels if r["status"] == "candidate"]
+        if confirmed:
+            desc = ", ".join(f"{r['source_filename']} ({r['source_col']}) ↔ {r['target_filename']} ({r['target_col']}) [{r.get('cardinality', '1:N')}]" for r in confirmed)
+            return {
+                "answer": f"Confirmed cross-dataset relationship(s): {desc}.",
+                "cypher": cypher_rels,
+                "result": confirmed,
+                "grounded": True,
+                "scope": "cross_dataset",
+                "datasets_involved": list({r["source_filename"] for r in confirmed} | {r["target_filename"] for r in confirmed}),
+            }
+        elif candidates:
+            desc = ", ".join(f"{r['source_filename']} ({r['source_col']}) ↔ {r['target_filename']} ({r['target_col']}) ({int(r['confidence']*100)}% match)" for r in candidates)
+            return {
+                "answer": f"Discovered candidate relationship(s) pending user confirmation: {desc}. Please review and confirm in the visualizer to enable join queries.",
+                "cypher": cypher_rels,
+                "result": candidates,
+                "grounded": True,
+                "scope": "cross_dataset",
+            }
+        else:
+            return {
+                "answer": "No relationships have been discovered or confirmed yet between datasets in this workspace.",
+                "cypher": cypher_rels,
+                "result": [],
+                "grounded": True,
+                "scope": "workspace",
+            }
+
+    if not (is_cross_scope or has_cross_words):
+        return None
+
+    if dataset_ids and len(dataset_ids) > 1:
+        scoped_rels = [r for r in rels if (r["source_id"] in dataset_ids and r["target_id"] in dataset_ids)]
+        if scoped_rels:
+            rels = scoped_rels
+
+    confirmed_rels = [r for r in rels if r["status"] == "confirmed"]
+    candidate_rels = [r for r in rels if r["status"] == "candidate"]
+
+    q_low = question.lower()
+    selected_rel = None
+    # Prioritize confirmed relations first
+    for r in confirmed_rels:
+        s_fn = (r.get("source_filename") or "").lower()
+        t_fn = (r.get("target_filename") or "").lower()
+        s_col = (r.get("source_col") or "").lower()
+        t_col = (r.get("target_col") or "").lower()
+        sample_m = [str(x).lower() for x in r.get("sample_matches", [])]
+        if (s_fn in q_low or t_fn in q_low or s_col in q_low or t_col in q_low or any(sm in q_low for sm in sample_m)):
+            selected_rel = r
+            break
+
+    if selected_rel is None:
+        for r in candidate_rels:
+            s_fn = (r.get("source_filename") or "").lower()
+            t_fn = (r.get("target_filename") or "").lower()
+            s_col = (r.get("source_col") or "").lower()
+            t_col = (r.get("target_col") or "").lower()
+            sample_m = [str(x).lower() for x in r.get("sample_matches", [])]
+            if (s_fn in q_low or t_fn in q_low or s_col in q_low or t_col in q_low or any(sm in q_low for sm in sample_m)):
+                selected_rel = r
+                break
+
+    if selected_rel is None and confirmed_rels:
+        selected_rel = confirmed_rels[0]
+    elif selected_rel is None and candidate_rels:
+        selected_rel = candidate_rels[0]
+
+    if selected_rel is None:
+        if has_cross_words:
+            return {
+                "answer": "No relationships exist between these datasets. Discover and confirm a relationship in the visualizer before querying across datasets.",
+                "cypher": None,
+                "result": None,
+                "grounded": False,
+            }
+        return None
+
+    if selected_rel["status"] != "confirmed":
+        return {
+            "answer": f"A candidate relationship exists between '{selected_rel['source_filename']}' ({selected_rel['source_col']}) and '{selected_rel['target_filename']}' ({selected_rel['target_col']}) with {int(selected_rel['confidence']*100)}% confidence ({selected_rel['overlap_count']} overlapping keys), but it is currently unconfirmed. Please confirm it in the graph visualizer first.",
+            "cypher": None,
+            "result": None,
+            "grounded": False,
+            "join_used": {
+                "source_col": selected_rel["source_col"],
+                "target_col": selected_rel["target_col"],
+                "status": "candidate",
+                "confidence": selected_rel["confidence"],
+            },
+        }
+
+    s_id = selected_rel["source_id"]
+    t_id = selected_rel["target_id"]
+    s_col = _quote_ident(selected_rel["source_col"])
+    t_col = _quote_ident(selected_rel["target_col"])
+    s_fn = selected_rel["source_filename"]
+    t_fn = selected_rel["target_filename"]
+
+    filter_value = None
+    sample_matches = selected_rel.get("sample_matches") or []
+    for sm in sample_matches:
+        if str(sm).lower() in q_low:
+            filter_value = str(sm)
+            break
+
+    filter_clause = ""
+    params = {"s_id": s_id, "t_id": t_id}
+    if filter_value:
+        filter_clause = f"AND toLower(toString(r1.{s_col})) = toLower($val)"
+        params["val"] = filter_value
+
+    join_cypher = f"""
+    MATCH (d1:Dataset {{id: $s_id}})-[:HAS_ROW]->(r1:Row),
+          (d2:Dataset {{id: $t_id}})-[:HAS_ROW]->(r2:Row)
+    WHERE r1.{s_col} IS NOT NULL AND toString(r1.{s_col}) = toString(r2.{t_col}) {filter_clause}
+    RETURN toString(r1.{s_col}) AS join_key,
+           properties(r1) AS `{s_fn}`,
+           properties(r2) AS `{t_fn}`
+    LIMIT 25
+    """
+    res = _run(driver, database, join_cypher, params)
+
+    for rec in res:
+        for k in ("row_index", "dataset_id"):
+            if isinstance(rec.get(s_fn), dict):
+                rec[s_fn].pop(k, None)
+            if isinstance(rec.get(t_fn), dict):
+                rec[t_fn].pop(k, None)
+
+    count_matches = len(res)
+    if filter_value:
+        ans = f"Found {count_matches} joined record(s) matching '{filter_value}' across {s_fn} and {t_fn} on {selected_rel['source_col']}."
+    else:
+        ans = f"Found {count_matches} joined record(s) between {s_fn} and {t_fn} linked on confirmed key '{selected_rel['source_col']}' = '{selected_rel['target_col']}'."
+
+    return {
+        "answer": ans,
+        "cypher": join_cypher,
+        "result": res,
+        "grounded": True,
+        "scope": "cross_dataset",
+        "datasets_involved": [s_fn, t_fn],
+        "join_used": {
+            "source_dataset": s_fn,
+            "target_dataset": t_fn,
+            "source_col": selected_rel["source_col"],
+            "target_col": selected_rel["target_col"],
+            "cardinality": selected_rel.get("cardinality", "1:N"),
+            "status": "confirmed",
+        },
+    }
+
+
 # Order matters: most specific/unambiguous intents first.
 _INTENTS = [
+    _cross_dataset_intent,
     _row_lookup,
     _distinct_values_intent,
     _groupby_count_intent,
@@ -350,11 +592,20 @@ _INTENTS = [
 ]
 
 
-def try_answer(driver, database: str, question: str, columns: list[str]) -> dict | None:
+def try_answer(driver, database: str, question: str, columns: list[str], dataset_id: str | None = None, scope: str = "single", dataset_ids: list[str] | None = None) -> dict | None:
     """Returns a full /chat response dict if any intent matched the question, else None."""
+    import inspect
     for intent in _INTENTS:
         try:
-            result = intent(driver, database, question, columns)
+            sig = inspect.signature(intent)
+            kwargs = {}
+            if "dataset_id" in sig.parameters:
+                kwargs["dataset_id"] = dataset_id
+            if "scope" in sig.parameters:
+                kwargs["scope"] = scope
+            if "dataset_ids" in sig.parameters:
+                kwargs["dataset_ids"] = dataset_ids
+            result = intent(driver, database, question, columns, **kwargs)
         except Exception as e:
             log.warning("deterministic intent %s raised: %s", intent.__name__, e)
             continue
