@@ -232,6 +232,8 @@ def _topn_intent(driver, database, question, columns):
     cypher = (
         f"MATCH (r:Row) WHERE toFloat(r.{col}) IS NOT NULL " f"RETURN r ORDER BY toFloat(r.{col}) {direction} LIMIT $n"
     )
+    result = _run(driver, database, cypher, {"n": n})
+
     chart_data = []
     label_col = next((c for c in columns if c != column), "row_index")
     for row in result[:15]:
