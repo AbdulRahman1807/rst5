@@ -11,6 +11,11 @@ from neo4j import GraphDatabase
 from neo4j.exceptions import AuthError, ServiceUnavailable
 
 try:
+    import analytics
+except ImportError:
+    from api import analytics
+
+try:
     import chatbot
 except ImportError:
     from api import chatbot
@@ -145,28 +150,90 @@ async def ingest(file: UploadFile = File(...)):
 
 @app.get("/status")
 def status(job_id: str):
+    try:
+        with get_driver().session(database=NEO4J_DATABASE) as session:
+            record = session.run(
+                "MATCH (d:Dataset {id: $id}) RETURN d.status AS status, "
+                "d.rows_total AS rows_total, d.rows_loaded AS rows_loaded, d.rows_failed AS rows_failed",
+                id=job_id,
+            ).single()
+
+        if record is not None:
+            return {
+                "job_id": job_id,
+                "status": record["status"],
+                "rows_total": record["rows_total"],
+                "rows_loaded": record["rows_loaded"],
+                "rows_failed": record["rows_failed"],
+            }
+    except Exception as e:
+        log.debug("could not query neo4j for status: %s", e)
+
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="unknown job_id")
 
     rows_total = jobs[job_id]["rows_received"]
+    return {"job_id": job_id, "status": "queued", "rows_total": rows_total, "rows_loaded": 0, "rows_failed": 0}
 
-    with get_driver().session(database=NEO4J_DATABASE) as session:
-        record = session.run(
-            "MATCH (d:Dataset {id: $id}) RETURN d.status AS status, "
-            "d.rows_total AS rows_total, d.rows_loaded AS rows_loaded, d.rows_failed AS rows_failed",
-            id=job_id,
-        ).single()
 
-    if record is None:
-        return {"job_id": job_id, "status": "queued", "rows_total": rows_total, "rows_loaded": 0, "rows_failed": 0}
+@app.get("/datasets")
+def list_datasets():
+    return analytics.get_all_datasets(get_driver(), NEO4J_DATABASE)
 
-    return {
-        "job_id": job_id,
-        "status": record["status"],
-        "rows_total": record["rows_total"],
-        "rows_loaded": record["rows_loaded"],
-        "rows_failed": record["rows_failed"],
-    }
+
+@app.get("/analytics/profile")
+def dataset_profile(job_id: str):
+    return analytics.get_dataset_profile(get_driver(), NEO4J_DATABASE, job_id)
+
+
+@app.get("/analytics/quality")
+def dataset_quality(job_id: str):
+    return analytics.get_data_quality(get_driver(), NEO4J_DATABASE, job_id)
+
+
+@app.post("/relationships/discover")
+def discover_relationships(payload: dict = None):
+    payload = payload or {}
+    dataset_ids = payload.get("dataset_ids")
+    return analytics.discover_relationships(get_driver(), NEO4J_DATABASE, dataset_ids=dataset_ids)
+
+
+@app.get("/relationships")
+def list_relationships(status: str = "all"):
+    return analytics.get_relationships(get_driver(), NEO4J_DATABASE, status_filter=status)
+
+
+@app.post("/relationships/{rel_id}/confirm")
+def confirm_relationship(rel_id: str):
+    return analytics.set_relationship_status(get_driver(), NEO4J_DATABASE, rel_id, "confirmed")
+
+
+@app.post("/relationships/{rel_id}/reject")
+def reject_relationship(rel_id: str):
+    return analytics.set_relationship_status(get_driver(), NEO4J_DATABASE, rel_id, "rejected")
+
+
+@app.post("/relationships/manual")
+def create_manual_relationship(payload: dict):
+    source_id = payload.get("source_id")
+    source_col = payload.get("source_col")
+    target_id = payload.get("target_id")
+    target_col = payload.get("target_col")
+    if not (source_id and source_col and target_id and target_col):
+        raise HTTPException(status_code=400, detail="Missing required relationship mapping fields")
+    return analytics.create_manual_relationship(
+        get_driver(), NEO4J_DATABASE, source_id, source_col, target_id, target_col
+    )
+
+
+@app.get("/relationships/{rel_id}/matches")
+def relationship_matches(rel_id: str, limit: int = 25):
+    return analytics.get_relationship_matches(get_driver(), NEO4J_DATABASE, rel_id, limit=limit)
+
+
+@app.get("/workspace/graph")
+def workspace_graph():
+    return analytics.get_workspace_graph(get_driver(), NEO4J_DATABASE)
 
 
 @app.post("/chat")
@@ -174,4 +241,11 @@ def chat(payload: dict | None = None):
     if payload is None:
         payload = {}
     question = payload.get("question", "")
-    return chatbot.answer_question(get_driver(), NEO4J_DATABASE, question)
+    chat_kwargs = {}
+    if "dataset_id" in payload:
+        chat_kwargs["dataset_id"] = payload["dataset_id"]
+    if "scope" in payload:
+        chat_kwargs["scope"] = payload["scope"]
+    if "dataset_ids" in payload:
+        chat_kwargs["dataset_ids"] = payload["dataset_ids"]
+    return chatbot.answer_question(get_driver(), NEO4J_DATABASE, question, **chat_kwargs)

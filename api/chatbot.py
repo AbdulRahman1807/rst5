@@ -82,10 +82,16 @@ def get_client() -> Groq:
     return _client
 
 
-def build_schema_context(driver, database: str) -> tuple[list[str], dict]:
+def build_schema_context(driver, database: str, dataset_id: str | None = None) -> tuple[list[str], dict]:
     """Look at one real Row node to learn the current CSV's columns, for prompt grounding."""
     with driver.session(database=database) as session:
-        record = session.run("MATCH (r:Row) RETURN keys(r) AS keys, r AS row LIMIT 1").single()
+        if dataset_id:
+            record = session.run(
+                "MATCH (d:Dataset {id: $id})-[:HAS_ROW]->(r:Row) RETURN keys(r) AS keys, r AS row LIMIT 1",
+                id=dataset_id,
+            ).single()
+        else:
+            record = session.run("MATCH (r:Row) RETURN keys(r) AS keys, r AS row LIMIT 1").single()
     if record is None:
         return [], {}
     columns = [k for k in record["keys"] if k not in ("row_index", "dataset_id")]
@@ -93,9 +99,12 @@ def build_schema_context(driver, database: str) -> tuple[list[str], dict]:
     return columns, sample_row
 
 
-def has_any_data(driver, database: str) -> bool:
+def has_any_data(driver, database: str, dataset_id: str | None = None) -> bool:
     with driver.session(database=database) as session:
-        record = session.run("MATCH (d:Dataset) RETURN count(d) AS c").single()
+        if dataset_id:
+            record = session.run("MATCH (d:Dataset {id: $id}) RETURN count(d) AS c", id=dataset_id).single()
+        else:
+            record = session.run("MATCH (d:Dataset) RETURN count(d) AS c").single()
     return record is not None and record["c"] > 0
 
 
@@ -158,6 +167,82 @@ def _groq_configured() -> bool:
     return bool(GROQ_API_KEY) and GROQ_API_KEY != "your_groq_api_key_here"
 
 
+def infer_chart_from_result(result: list[dict], cypher: str, question: str, columns: list[str]) -> dict | None:
+    """Infers an honest, grounded chart configuration if result data supports it."""
+    if not result or len(result) < 2:
+        return None
+
+    first = result[0]
+    keys = [k for k in first.keys() if k not in ("r", "row_index", "dataset_id")]
+
+    # Direct key-value results (e.g. category and aggregate count/avg/sum)
+    if len(keys) >= 2:
+        str_keys = []
+        num_keys = []
+        for k in keys:
+            val = first.get(k)
+            try:
+                float(val)
+                num_keys.append(k)
+            except (ValueError, TypeError):
+                str_keys.append(k)
+
+        if str_keys and num_keys:
+            x_k = str_keys[0]
+            y_k = num_keys[0]
+            chart_data = []
+            for row in result[:20]:
+                try:
+                    v = float(row.get(y_k, 0))
+                    lbl = str(row.get(x_k, ""))
+                    chart_data.append({"category": lbl, "value": v})
+                except (ValueError, TypeError):
+                    pass
+            if chart_data:
+                return {
+                    "type": "bar",
+                    "title": f"{y_k.replace('_', ' ').title()} by {x_k.replace('_', ' ').title()}",
+                    "x_key": "category",
+                    "y_key": "value",
+                    "data": chart_data,
+                }
+
+    # Node records returned under 'r'
+    if "r" in first and isinstance(first["r"], dict):
+        node_props = first["r"]
+        matching_cols = [c for c in columns if c.lower() in question.lower()]
+        target_num = None
+        for c in matching_cols:
+            if c in node_props:
+                try:
+                    float(node_props[c])
+                    target_num = c
+                    break
+                except (ValueError, TypeError):
+                    pass
+        if target_num:
+            label_col = next((c for c in columns if c != target_num), "row_index")
+            chart_data = []
+            for row in result[:20]:
+                props = row.get("r", {})
+                lbl = props.get(label_col, props.get("row_index", "Row"))
+                try:
+                    v = float(props.get(target_num, 0))
+                    chart_data.append({"category": str(lbl), "value": v})
+                except (ValueError, TypeError):
+                    pass
+            if chart_data:
+                return {
+                    "type": "bar",
+                    "title": f"{target_num.title()} Distribution",
+                    "x_key": "category",
+                    "y_key": "value",
+                    "data": chart_data,
+                }
+
+    return None
+
+
 def _try_llm(driver, database: str, question: str, columns: list[str], sample_row: dict) -> dict | None:
     """Returns a full /chat response dict on success, or None if the LLM path couldn't
     produce a grounded answer — caller falls back to the deterministic matcher, not to
@@ -185,10 +270,11 @@ def _try_llm(driver, database: str, question: str, columns: list[str], sample_ro
         log.warning("groq phrase_answer failed: %s", e)
         answer = f"Result: {result}"  # still grounded — we have real data, just no LLM phrasing
 
-    return {"answer": answer, "cypher": cypher, "result": result, "grounded": True}
+    chart = infer_chart_from_result(result, cypher, question, columns)
+    return {"answer": answer, "cypher": cypher, "result": result, "grounded": True, "chart": chart}
 
 
-def answer_question(driver, database: str, question: str) -> dict:
+def answer_question(driver, database: str, question: str, dataset_id: str | None = None, scope: str = "single", dataset_ids: list[str] | None = None) -> dict:
     """Two-tier: LLM (Groq) when configured, deterministic keyword/value matcher always as
     the guaranteed fallback (and the whole system, if GROQ_API_KEY isn't set at all) — so the
     pipeline answers grounded questions correctly with zero LLM dependency, and the LLM is
@@ -200,30 +286,38 @@ def answer_question(driver, database: str, question: str) -> dict:
             "cypher": None,
             "result": None,
             "grounded": False,
+            "chart": None,
         }
 
     try:
-        if not has_any_data(driver, database):
+        if not has_any_data(driver, database, dataset_id):
             return {
                 "answer": "I don't have any data yet — upload a CSV first.",
                 "cypher": None,
                 "result": None,
                 "grounded": False,
+                "chart": None,
             }
 
-        columns, sample_row = build_schema_context(driver, database)
+        columns, sample_row = build_schema_context(driver, database, dataset_id)
 
-        if _groq_configured():
+        # First, allow deterministic engine to handle cross-dataset queries or specialized intents
+        det_result = chatbot_deterministic.try_answer(
+            driver, database, question, columns, dataset_id=dataset_id, scope=scope, dataset_ids=dataset_ids
+        )
+        if det_result is not None:
+            if "chart" not in det_result:
+                det_result["chart"] = None
+            return det_result
+
+        # Next, try LLM if configured and single-dataset scope
+        if _groq_configured() and scope == "single":
             llm_result = _try_llm(driver, database, question, columns, sample_row)
             if llm_result is not None:
                 return llm_result
             log.info("LLM path unavailable/unhelpful for this question, falling back to deterministic matcher")
 
-        det_result = chatbot_deterministic.try_answer(driver, database, question, columns)
-        if det_result is not None:
-            return det_result
-
-        return {"answer": "I don't have that in the data.", "cypher": None, "result": None, "grounded": False}
+        return {"answer": "I don't have that in the data.", "cypher": None, "result": None, "grounded": False, "chart": None}
 
     except Exception as e:
         log.error("unexpected /chat failure: %s", e)
@@ -232,4 +326,5 @@ def answer_question(driver, database: str, question: str) -> dict:
             "cypher": None,
             "result": None,
             "grounded": False,
+            "chart": None,
         }

@@ -36,7 +36,7 @@ test:
 
 test-e2e:
 	@echo "Starting isolated e2e stack (rst5-e2e)..."
-	COMPOSE_PROJECT_NAME=rst5-e2e API_PORT=8001 NEO4J_HTTP_PORT=7475 NEO4J_BOLT_PORT=7688 KAFKA_PORT=9093 UI_PORT=3001 docker compose up -d --build --wait
+	COMPOSE_PROJECT_NAME=rst5-e2e API_PORT=8001 NEO4J_HTTP_PORT=7475 NEO4J_BOLT_PORT=7688 KAFKA_PORT=9093 UI_PORT=3005 docker compose up -d --build --wait
 	@set -e; \
 	trap 'echo "Tearing down rst5-e2e stack..."; COMPOSE_PROJECT_NAME=rst5-e2e docker compose down -v' EXIT; \
 	API_URL="http://localhost:8001" NEO4J_URI="bolt://localhost:7688" $(PYTEST) tests/test_e2e.py -v -m e2e

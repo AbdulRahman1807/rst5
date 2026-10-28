@@ -634,5 +634,3 @@ def test_extract_number_never_raises(text: str):
     """
     res = _extract_number(text)
     assert res is None or isinstance(res, float)
-
-

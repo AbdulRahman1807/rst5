@@ -308,4 +308,3 @@ All bash scripts ported to `tests/test_e2e.py` under marker `@pytest.mark.e2e`:
    - Ingests CSV with cell containing quoted newline (`"123 Main St\nSuite 400"`) and tab (`"good\taccount"`).
    - Ingestion completes with `rows_loaded=1, rows_failed=0`.
    - Direct Neo4j inspection verifies node properties preserve exact multiline and tab formatting.
-

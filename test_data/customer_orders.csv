@@ -1,0 +1,13 @@
+customer,order_id,order_date,status,order_total
+Acme Co,ORD-1001,2026-01-15,Paid,128.50
+Acme Co,ORD-1002,2026-02-10,Pending,450.00
+Nova Retail,ORD-1003,2026-01-18,Paid,340.00
+Redwood Inc,ORD-1004,2026-01-22,Paid,210.00
+Redwood Inc,ORD-1005,2026-02-05,Unpaid,520.00
+Lakeside Media,ORD-1006,2026-02-01,Paid,60.00
+Silver Peak,ORD-1007,2026-02-14,Paid,120.00
+Silver Peak,ORD-1008,2026-02-20,Pending,95.00
+Maple Systems,ORD-1009,2026-02-18,Paid,275.00
+Everline Corp,ORD-1010,2026-02-22,Paid,650.00
+OmniGlobal Corp,ORD-1011,2026-02-25,Unpaid,890.00
+Apex Dynamics,ORD-1012,2026-02-27,Paid,310.00
